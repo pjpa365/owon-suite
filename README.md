@@ -1,9 +1,16 @@
 # Suite for OWON Devices
 
-A Windows desktop app for OWON BLE digital multimeters — live readings,
-device control, long-term recording, data visualization, calculations, and
-an MCP server for AI-agent access. Runs locally in your browser; no cloud
-account, no data leaving your PC.
+A desktop app for OWON BLE digital multimeters — live readings, device
+control, long-term recording, data visualization, calculations, and an MCP
+server for AI-agent access. Runs locally in your browser; no cloud account,
+no data leaving your PC.
+
+Built to be cross-platform (Windows and Linux) — the backend is plain
+Python/FastAPI and `bleak` (the BLE library) supports both WinRT and BlueZ
+under the hood — but **only Windows has actually been tested so far**. The
+one-step installer (`install.ps1`) is Windows-only today; Linux is currently
+"should work, run it from source" rather than a supported, tested path. See
+[Building from source](#building-from-source) below.
 
 Currently targets the **OWON B41T+**. The BLE protocol was independently
 reverse-engineered and validated against real hardware (see
@@ -27,8 +34,11 @@ reverse-engineered and validated against real hardware (see
 
 ## Limitations
 
-- **Windows only.** The installer and the BLE backend (`bleak`'s WinRT
-  backend) target Windows 10/11.
+- **Only tested on Windows 10/11.** The app is written to be cross-platform
+  and `bleak` supports Linux (BlueZ) natively, but that path hasn't been run
+  or verified yet — treat Linux as untested, not unsupported. There's no
+  one-step installer for Linux yet; see
+  [Building from source](#building-from-source).
 - **OWON B41T+ only, today.** The architecture (see
   [`architecture.md`](architecture.md) §9) leaves room for other
   brands/instrument types, but nothing else is implemented yet.
@@ -57,21 +67,39 @@ proceed.
 
 ## Building from source
 
+The only Windows-specific pieces are `install.ps1`/`build-release.ps1`
+(PowerShell) and `backend/requirements-lock.txt` (a pinned dependency
+freeze captured on Windows, so it includes Windows-only wheels like
+`pywin32`/`winrt-*`) — use plain `requirements.txt` instead on Linux, which
+lets `pip` resolve the right platform-specific packages itself.
+
+**Windows:**
 ```powershell
-# Backend
 cd backend
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python run.py          # dev server, http://127.0.0.1:10765
 
-# Frontend (separate terminal)
-cd frontend
+cd ..\frontend                       # separate terminal
+npm install
+npm run dev                          # dev server, http://127.0.0.1:5173
+```
+
+**Linux (untested, should work):**
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python run.py              # dev server, http://127.0.0.1:10765
+
+cd ../frontend                       # separate terminal
 npm install
 npm run dev                          # dev server, http://127.0.0.1:5173
 ```
 
 `build-release.ps1` builds the frontend and packages a distributable
-release zip (what `install.ps1` downloads) from a working checkout.
+release zip (what `install.ps1` downloads) from a working checkout —
+Windows-only for now, same as `install.ps1` itself.
 
 ## Screenshots
 

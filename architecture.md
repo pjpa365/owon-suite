@@ -165,209 +165,24 @@ completes, online-recording threshold/low-battery monitoring, pause/resume handl
 
 ## 5. MCP server
 
-A thin translation layer over the REST API, the streaming channel, and a read-only query
-surface over the database — not a second implementation of device/data logic. Reachable
-from the LAN, not just the local PC (like the mobile client — see
-`Mobile Requirements.txt`), protected by the access-control model in §5.3. Built in two
-parts, both now shipped: **Part 1** (this section's query/data-access design, read-only)
-and **Part 2** (§5.6 — button presses and recording control).
+A thin translation layer over the same REST API, streaming channel, and
+database the UI itself uses — not a second implementation of device/data
+logic. Reachable from the LAN as well as the local PC, gated behind an
+`mcp_enabled` setting (off by default) plus an API key.
 
-### 5.1 Data access
+It has two parts:
 
-- **Live values**: "get latest X values" for a device, X from 1 (current value) up to the
-  cyclic buffer's fixed size (§3.3) — not a literal continuous push into the model (see
-  rationale below).
-- **Device list**: name, driver, and **live connection status** (online/offline) per known
-  device. Status is runtime state in the connection manager (§3.2), never persisted, so
-  this is a dedicated tool call combining stored device metadata with a live status
-  lookup — it cannot be answered by the SQL query capability below on its own, since that
-  can only ever see what's actually in the database.
-- **List/filter stored recordings, and fetch one recording's points**: `get_measurements`
-  (device/name/date-range filters, plus sorting by name/start time/unit/device — sorting
-  that doesn't exist in the REST API at all, added here as an MCP-only convenience) and
-  `get_measurement_points` (every value for one recording, oldest first, with an optional
-  cap on how many to return — omitted, returns all of them). These reuse
-  `measurement_store.list()`/`get_points()` directly, the same methods the Data admin
-  page's REST routes call — no new storage-layer logic. Exists alongside the `query` tool
-  below, not instead of it: these two are the straightforward "find/read a recording"
-  path; `query` is for questions that need actual SQL (joins, aggregates across
-  recordings) that a plain list/fetch can't answer.
-- **Ad-hoc read-only queries** (new): the MCP client can pass a SQL query, run against
-  three purpose-built **views** — not the raw base tables:
-  - `mcp_devices` — id, name, driver (no BT address; an agent has no need for it).
-  - `mcp_measurements` — the stored-measurement metadata (device, name, unit, function,
-    status, time range, min/max/avg/median, count).
-  - `mcp_measurement_points` — the actual time-series values, joinable to
-    `mcp_measurements` by `measurement_id`.
-  - (Deliberately no lineage view — an agent can already discover a calculated
-    measurement's sources by querying `mcp_measurements` itself if that's ever exposed
-    there; not worth a fourth view for now.)
-  - Example use case directly from the spec: "from measurement X, find the max value; are
-    there any other measurements with a value higher than that within 10 seconds of their
-    own start?" — answerable in one query against these views, without a bespoke tool for
-    every possible question shape.
-  - **Everything else in the database — `app_settings` above all, since it holds the
-    mobile PIN in plaintext — is unreachable by query validation** (§5.2): the query
-    layer only permits SQL that references these three views, not the base tables, so no
-    query shape accepted by that check can see anything else.
+- **Read-only data access** — device list and live connection status,
+  latest live values, listing/fetching stored recordings, and an ad-hoc SQL
+  query tool scoped to a handful of purpose-built read-only views (not the
+  raw database tables), so an AI agent can answer real analytical questions
+  without a bespoke tool for every possible question shape.
+- **Device and recording control** — the same button presses and
+  start/pause/stop actions the dashboard itself exposes, calling the exact
+  same backend logic the REST API calls — no duplicated device/recording
+  behavior.
 
-### 5.2 Making ad-hoc queries safe
-
-Originally planned as two independent layers (a validated query text, backed by a
-database-engine-enforced read-only connection as a hard backstop). Building it surfaced a
-real constraint: DuckDB refuses to open a second connection to the same database file, in
-the same process, with a different access mode than one already open — and the app's
-main connection is writable and open for its entire lifetime, so a genuinely separate,
-engine-enforced read-only connection to the same file isn't available without moving the
-query surface into its own process. That's more complexity than this feature currently
-warrants, so the query connection is instead a second handle onto the *same* writable
-connection (safe to use from a different thread), and query-text validation is the only
-thing standing between an ad-hoc query and the real database — not a backstop behind an
-engine-level guarantee:
-
-1. **Query validation, rejecting the whole query on any violation** (no partial
-   results): must be a single `SELECT` statement (no stacked/semicolon-separated
-   statements), only referencing the three views above, and only calling a short
-   allowlist of aggregate functions (`count`/`min`/`max`/`avg`/`sum`). Anything that
-   fails this check returns an error, not a truncated or best-effort result. Since this
-   is the only layer standing between a query and the real database, a gap here is a
-   real gap — and a real one was found: a first-pass **regex-based** validator (matching
-   table names via `\bfrom\s+(\w+)`) was defeated two independent ways during a security
-   review (2026-08-31) — a double-quoted identifier (`FROM "app_settings"`) and an
-   old-style comma-join (`FROM mcp_devices, app_settings`) both slip past a regex anchored
-   only on the token immediately following `FROM`/`JOIN`, either of which handed back the
-   real settings table (plaintext mobile PIN, MCP API key) in full. A third gap: a query
-   with no `FROM`/`JOIN` at all had nothing for that regex to inspect, and DuckDB's own
-   `current_setting()` through it leaked a real filesystem path. Fixed by replacing the
-   regex with a real parser (`sqlglot`, parsed against the DuckDB dialect): every table
-   reference and every function call in the parsed tree is walked and checked, which
-   quoting/comma-joins/schema-qualification/CTEs can't fool the way text-pattern matching
-   could, and a query touching zero tables (or calling anything outside the function
-   allowlist) is rejected outright. See `security-test-plan.md` for the full test
-   results.
-2. **Executed off the main thread** (`asyncio.to_thread(...)` or equivalent), not just on
-   a separate connection object. The app today runs everything synchronously on one event
-   loop; without this, an expensive analytical query would still freeze that loop (and
-   therefore live BLE ingestion and every other request) for its entire duration. DuckDB's
-   Python bindings release the GIL during query execution, so a background-thread query
-   genuinely runs alongside the rest of the app instead of blocking it. A query timeout
-   and a hard row-limit are part of this layer too.
-   - Even with this in place, running very large/complex ad-hoc queries during an
-     actively-running recording is still not recommended practice — the manual (§5.4)
-     should say so as guidance, distinct from what's technically enforced above.
-
-### 5.3 Access control
-
-- **Global settings** (§3.6): `mcp_enabled` (off by default), `mcp_queries_enabled` (a
-  second, independent checkbox — the query surface can be switched off even while the
-  rest of MCP is on), `mcp_api_key` (a plain string the user sets themselves, blank by
-  default).
-- **Network layer**: reuses the exact two-layer model already built for the mobile
-  client — everything stays loopback-only by default; only the specific MCP endpoint
-  paths are exempted for LAN callers, the same allowlist mechanism as `mobile_auth.py`,
-  extended to cover them.
-- **Credential layer**: the LAN-exempted MCP paths additionally require the configured
-  `mcp_api_key` as a request header. A blank/unset key means MCP refuses every request
-  outright, the same "blank = feature does nothing yet" convention as the mobile PIN.
-  Deliberately **not** an IP allowlist as the primary gate — the LAN certificate work
-  already demonstrated that IP addresses on this network aren't as stable as they look
-  (DHCP), so an IP-keyed gate would fail the same way the certificate did the moment a
-  lease changes. A key-based credential doesn't care what address the request came from.
-- **Deleting anything is out of scope entirely** — not exposed by any MCP tool, Part 1 or
-  Part 2, full stop.
-- **No control-lock/banner between a human user and an active MCP session.** (An earlier
-  draft of this document proposed one; explicitly dropped.) MCP must never be able to
-  lock a user out of controlling their own meter. Both the UI and MCP can send control
-  actions at any time; neither blocks the other, and whichever command reaches the meter
-  last simply takes effect — the same as if two people pressed buttons on the same meter
-  in quick succession. Read/live-data access was always unrestricted for both regardless.
-
-### 5.4 Documentation
-
-Every MCP tool needs to explain, for the agent reading it, what it does, its parameters,
-and — where an order matters (e.g. the offline-recording workflow: initiate, poll status,
-detect reconnect, confirm download completion, retrieve the resulting measurement by
-name) — that sequence explicitly. The user manual gets its own MCP section covering the
-same tools from the human side, plus concretely how to point a real MCP client (e.g.
-Claude Desktop) at this server: the connection URL and where the API key goes in that
-client's config, verified against the actual implementation once built (not written
-speculatively ahead of it) — a global-settings link should jump straight to this section.
-
-### 5.5 Why not a literal continuous stream (for live values)
-
-MCP's primitives are tools (request/response) and resources (with update notifications,
-surfaced at the host application's discretion — not a guaranteed continuous injection
-into model context). A raw 2-3-reading/second firehose would also be a poor fit for how
-LLMs are actually useful — better suited to being asked a question, or reacting to a
-meaningful event, than watching every sample. Time-critical reactions (e.g. "stop
-immediately at threshold") belong in the backend's own threshold engine (§3.8), not
-routed through an LLM round-trip per sample.
-
-### 5.6 Part 2 — button presses and recording control
-
-Twelve tools, added to `backend/app/mcp/server.py` alongside Part 1's three
-(`list_devices`, `get_latest_values`, `query`), each calling the exact same manager
-methods the REST routes in `api/control.py`/`api/recordings.py` already call — no new
-device/recording behavior, just a second way to reach the behavior that already exists:
-
-- `press_button` — all ten of the meter's physical-button equivalents in one tool,
-  including Bluetooth-off (an agent can legitimately be told to disconnect the meter when
-  a session is finished; it only drops the agent's own BLE link, not any stored data).
-- `start_adhoc_recording` / `pause_adhoc_recording` / `resume_adhoc_recording` /
-  `stop_adhoc_recording` — the dashboard's own quick, no-configuration recording.
-- `start_online_recording` / `pause_online_recording` / `resume_online_recording` /
-  `stop_online_recording` — the Recording control widget's "Online (PC)" mode, same
-  parameters (start/stop thresholds, sample count/duration/end-time stop conditions,
-  interval, averaging, stop-on-low-battery).
-- `start_offline_recording` / `stop_offline_recording` — the "Offline (device)" mode.
-  Starting it still causes the meter to disconnect from the PC by itself, same as the UI
-  equivalent; downloading the finished recording afterwards still needs a person to
-  physically long-press REL/BLE on the meter — an agent can start this, not finish it.
-- `recording_status` — one combined check across all three recording types for a device,
-  so an agent can see what's already running before trying to start something new.
-
-**Every recording tool's docstring spells out the full workflow, not just what that one
-call does** — added after building Part 2 and finding, in practice, that a tool doing only
-its one narrow job leaves the calling agent guessing what to do next. Concretely:
-`start_online_recording`'s docstring says to poll `recording_status` for progress and
-where the finished measurement's id turns up once it stops; `start_offline_recording`'s
-spells out the exact state sequence (`recording` → `awaiting_reconnect` → `downloading` →
-`completed`/`error`) including the plain fact that the reconnect step needs a person
-physically at the meter and can't be done or hurried remotely; both point at
-`get_measurements`/`get_measurement_points` (§5.1) as the last step, once a recording's
-actually finished, to retrieve the data itself — none of the status/control tools return
-recorded values, only metadata about what's happening.
-
-**No new access-control switch.** Decided when Part 2 was planned: these tools are gated
-by nothing beyond the existing `mcp_enabled` switch (§5.3), the same gate Part 1's
-`list_devices`/`get_latest_values` already use — no separate "allow control actions" or
-"allow recording control" toggle, even though the two were discussed as an option. The
-existing `mcp_queries_enabled` switch is untouched and still gates only the `query` tool.
-
-### 5.7 Considered and declined: a chart-image tool
-
-Discussed: an MCP tool that would render one or more measurements into a chart picture
-(PNG/JPG), similar to the Chart (multiple) widget's own "download as image" feature, so an
-AI assistant could hand back an actual picture instead of just numbers. A full plan was
-drafted (legend baked into the image, per-measurement relative time, up to 2 units/axes,
-auto Y-axis offset, point markers on every sample, reusing the same per-unit chart colors
-already configured in Settings) but deliberately not built, for two reasons given when
-declining it:
-
-1. **It would need its own, separate chart-drawing code.** Every chart today is drawn in
-   the browser (JavaScript, ECharts) — nothing on the backend draws anything. A chart-image
-   tool would mean a second, independent implementation of "how to draw a chart," written
-   in Python against a different charting library, alongside the existing frontend one —
-   two places that could quietly drift apart over time rather than one shared source of
-   truth.
-2. **The result would look different from the dashboard's own charts regardless.** Matching
-   fonts, spacing, and rendering quirks exactly across two completely different charting
-   libraries (one browser-based, one server-side) realistically isn't achievable, so the
-   image handed to an AI assistant would never quite match what the dashboard itself shows
-   — undermining the main reason to want a picture in the first place.
-
-Revisit this if a real need for it comes up again, but it's not part of the MCP server
-today.
+Deleting anything is out of scope for MCP entirely, in both parts.
 
 ## 6. Frontend
 
