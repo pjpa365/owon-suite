@@ -1,0 +1,144 @@
+:root {
+  color-scheme: light dark;
+}
+
+/* Mantine toggles this attribute for its own light/dark/auto setting,
+   independently of the OS-level preference the plain `color-scheme` above
+   follows. Native browser-drawn chrome (date/time-picker popups, scrollbar
+   thumb/track) only reacts to `color-scheme`, so without this it stays stuck
+   on the OS theme even when the in-app toggle is set to dark. */
+[data-mantine-color-scheme="dark"] {
+  color-scheme: dark;
+}
+
+[data-mantine-color-scheme="light"] {
+  color-scheme: light;
+}
+
+/* Neutral surfaces/text from Design_result/theme-tokens.md SS2. Page bg is
+   deliberately more saturated-neutral than card surface in both modes (this
+   was a late fix for "not enough contrast between dashboard background and
+   widgets") -- don't let the two converge back to near-identical grays.
+   --app-text-faint exists for a future finer secondary-text tier; nothing
+   uses it yet -- --mantine-color-dimmed (below) covers all current
+   c="dimmed" call sites with --app-text-muted, the more legible of the two. */
+[data-mantine-color-scheme="light"] {
+  --mantine-color-text: #1c2226;
+  --mantine-color-dimmed: #41494f;
+  --app-page-bg: #e5e8eb;
+  --app-card-surface: #ffffff;
+  --app-card-surface-alt: #f4f7fa;
+  --app-widget-header-bg: #f4f7fa;
+  --app-text-muted: #41494f;
+  --app-text-faint: #636a6f;
+  /* Mantine's built-in "default" variant background (--mantine-color-default)
+     is plain white in light mode -- identical to --app-card-surface, so a
+     variant="default" Button/ActionIcon sitting on a widget's card body was
+     effectively invisible. Point it at the app's own surfaceAlt tokens
+     instead so ordinary body buttons read as a visibly distinct neutral
+     surface in both themes (Changes_post_phase5_and_color_design.txt).
+     !important: Mantine declares its own default-* vars on
+     `:root[data-mantine-color-scheme=...]` (specificity 0-2-0), which beats
+     this plain attribute selector (0-1-0) regardless of source order -- the
+     override was silently never applying without this. (Dark mode happened
+     to look fine anyway, by coincidence: Mantine's built-in dark-6 already
+     read as distinct from this app's near-black card surface.) */
+  --mantine-color-default: var(--app-card-surface-alt) !important;
+  --mantine-color-default-hover: color-mix(in srgb, var(--app-card-surface-alt) 85%, #000 15%) !important;
+  --mantine-color-default-color: var(--mantine-color-text) !important;
+}
+
+[data-mantine-color-scheme="dark"] {
+  --mantine-color-text: #e9ebec;
+  --mantine-color-dimmed: #b1b9be;
+  --app-page-bg: #020508;
+  --app-card-surface: #11171d;
+  --app-card-surface-alt: #262b31;
+  --app-widget-header-bg: #0c1218;
+  --app-text-muted: #b1b9be;
+  --app-text-faint: #838a90;
+  /* Same fix as the light block above (including the !important -- same
+     specificity issue against Mantine's own :root-scoped default). */
+  --mantine-color-default: var(--app-card-surface-alt) !important;
+  --mantine-color-default-hover: color-mix(in srgb, var(--app-card-surface-alt) 85%, #fff 15%) !important;
+  --mantine-color-default-color: var(--mantine-color-text) !important;
+}
+
+/* react-grid-layout's own default (red) reads as an error state while
+   resizing a widget -- override with a calmer theme color (Changes_post_
+   phase5_and_color_design.txt SS2). !important because this file loads before
+   react-grid-layout/css/styles.css in the module graph (DashboardGrid.tsx
+   imports the latter directly), so equal-specificity source order would
+   otherwise let the library's rule win. */
+.react-grid-item.react-grid-placeholder {
+  background: var(--mantine-color-green-6) !important;
+}
+
+/* Devices widget (Changes_post_phase5_and_color_design.txt): row flash on a
+   connection-state transition, and the attention-pulse on the "New Device
+   Found" button -- both purely visual, triggered from DeviceListWidget.tsx. */
+@keyframes blink-green {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  50% {
+    background-color: var(--mantine-color-green-light);
+  }
+}
+
+@keyframes blink-red {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  50% {
+    background-color: var(--mantine-color-red-light);
+  }
+}
+
+@keyframes blink-attention {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.blink-attention {
+  animation: blink-attention 1s ease-in-out infinite;
+}
+
+/* Meter display's active-recording dot (Changes_post_phase5_and_color_design.txt):
+   a slow opacity "breathing" glow, deliberately NOT the hard on/off blink-red
+   above -- that reads as an alert/error, this should read as "quietly still
+   recording". */
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 var(--mantine-color-red-light);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 6px 2px var(--mantine-color-red-light);
+  }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2.2s ease-in-out infinite;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100vh;
+  width: 100%;
+}

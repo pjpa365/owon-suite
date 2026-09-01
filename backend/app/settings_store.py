@@ -1,0 +1,154 @@
+"""Generic key-value store for live/UI settings (architecture.md SS3.6).
+
+Deliberately schemaless: values are JSON-encoded, and the set of known keys
+lives only in DEFAULTS below, not in the table schema. Adding a new setting
+is "add a default and read it somewhere" -- no migration, no new column, no
+new endpoint. Distinct from backend/config.env, which holds settings that
+affect backend *behavior* and require a restart to change; everything here
+is read per-request and takes effect immediately, which is why the frontend
+(not backend logic) owns most of what lives in it -- the one exception is
+the naming template, which measurement_store.py reads live so edits apply
+without a restart, exactly like everything else here.
+"""
+
+from __future__ import annotations
+
+import json
+
+import duckdb
+
+from . import naming
+
+# Default per-unit chart colors, split by light/dark surface for contrast --
+# from Design_result/theme-tokens.md SS7 (Claude design's color-schema
+# handoff), 11 hues tuned to stay clear of the red/green/yellow/grape status
+# hues so no series is ever confusable with a status color. Purely a
+# starting point -- fully user-editable via the settings UI.
+#
+# Keyed by the real runtime unit strings (owon_ble.protocol._BASE_UNITS),
+# not the doc's display-friendly ones -- "Ohm" not "Oe", "C"/"F" not "de C"/
+# "de F". One deliberate merge: the doc gives Farad and Fahrenheit separate
+# colors ("F" hue 130 vs "de F" hue 55), but the protocol layer emits the
+# literal string "F" for *both* (see _BASE_UNITS["Farad"] and ["TempF"]) --
+# there is no "de F" anywhere in the running app, and every already-stored
+# measurement's `unit` column is "F" for both cases too. Decided to keep that
+# collision rather than change the protocol/schema to disambiguate it: both
+# share this dict's "F" entry (the doc's literal-"F" row, hue 130).
+#
+# The protocol layer emits a scale prefix concatenated onto the base unit
+# (owon_ble/protocol.py's `scale_char + _BASE_UNITS[...]`) -- "MOhm", "mV",
+# "kOhm", etc. are each their own distinct literal unit string here, not a
+# separate multiplier alongside a plain "Ohm"/"V". Only the two prefixed
+# variants actually reported as missing (MOhm, mV) are added below; any other
+# scale/unit combination encountered later would need its own entry the same
+# way, or it'll fall back to a chart's default line color instead of one from
+# this palette.
+_CHART_COLORS_LIGHT = {
+    "V": "#005fa9",
+    "mV": "#0f6e8c",
+    "A": "#9b3a0d",
+    "Ah": "#00746f",
+    "Ohm": "#6b46a0",
+    "MOhm": "#9c3f83",
+    "W": "#007551",
+    "Wh": "#3658ac",
+    "Hz": "#715d00",
+    "%": "#9d3343",
+    "C": "#873a82",
+    "F": "#426c00",
+}
+_CHART_COLORS_DARK = {
+    "V": "#55a9ff",
+    "mV": "#5fc8e8",
+    "A": "#f18156",
+    "Ah": "#00c1b9",
+    "Ohm": "#b48df4",
+    "MOhm": "#e08fd0",
+    "W": "#00c296",
+    "Wh": "#76a1ff",
+    "Hz": "#bba500",
+    "%": "#f37986",
+    "C": "#d87fd1",
+    "F": "#85b749",
+}
+
+DEFAULTS: dict[str, object] = {
+    "dark_mode": "auto",  # "light" | "dark" | "auto"
+    "chart_colors": {"light": _CHART_COLORS_LIGHT, "dark": _CHART_COLORS_DARK},
+    "naming_template": naming.DEFAULT_TEMPLATE,
+    # date-fns/Luxon-style tokens (Changes_post_phase5_and_color_design.txt's
+    # "UI/client config settings" section) -- the frontend's dateFormat.ts is
+    # the only place these tokens are interpreted; this string is opaque here.
+    "date_format": "dd-MM-yyyy HH:mm:ss",
+    # Auto-connect to any known device whose Bluetooth comes on, and set the
+    # meter's clock from system time when initiating an offline recording --
+    # both read live by discovery_loop.py / the offline-recording start path,
+    # not restart-gated like backend/config.env.
+    "auto_connect": True,
+    "set_meter_clock_on_offline_init": True,
+    # Horizontal time axis for every time-based chart (Live chart, Chart
+    # (single), Chart (multiple) -- Changes ausgust-25.txt): "absolute" shows
+    # each point's real recorded time; "relative" shows elapsed seconds since
+    # the chart's own first plotted point (t0), the behavior Chart (multiple)
+    # always used for overlaying differently-timed recordings. A global
+    # setting (not per-widget) so every chart stays consistent with the others.
+    "chart_time_mode": "absolute",  # "absolute" | "relative"
+    # 4-digit PIN gating the mobile client (Mobile Requirements.txt item 2) --
+    # None/empty disables mobile access entirely (api/mobile.py refuses every
+    # request rather than prompting for a PIN it has no way to check).
+    "mobile_pincode": None,
+    # MCP server (architecture.md SS5) -- two independent switches, both off
+    # by default: the feature as a whole, and a second, narrower one for
+    # whether the read-only query tool specifically is allowed even when the
+    # rest of MCP is on. mcp_api_key is a plain string the user sets and
+    # pastes into their MCP client's config themselves (not generated by this
+    # app) -- blank/unset means every MCP request from off this PC is refused,
+    # the same "blank = disabled" convention as mobile_pincode above.
+    "mcp_enabled": False,
+    "mcp_queries_enabled": False,
+    "mcp_api_key": None,
+    # Server-generated secret (2026-09-01 security/UX fix) that mobile auth
+    # tokens are HMAC-derived from, alongside the current mobile_pincode --
+    # lets mobile_auth.py verify a token by recomputing it instead of
+    # tracking issued tokens in memory, so a backend restart no longer signs
+    # every phone out. Never sent to the mobile client, same as mcp_api_key.
+    "mobile_token_secret": None,
+}
+
+
+class SettingsStore:
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self._conn = conn
+
+    def get_all(self) -> dict[str, object]:
+        rows = self._conn.execute("SELECT key, value FROM app_settings").fetchall()
+        stored = {key: json.loads(value) for key, value in rows}
+        merged = {**DEFAULTS, **stored}
+
+        # chart_colors briefly had a flat {unit: color} shape before the
+        # light/dark split -- a row saved under that shape would otherwise
+        # fully override DEFAULTS (stored wins per-key, not deep-merged) and
+        # crash any reader expecting .light/.dark. Self-heals on next read;
+        # the shape is corrected for good the next time settings are saved.
+        chart_colors = merged.get("chart_colors")
+        if not isinstance(chart_colors, dict) or "light" not in chart_colors or "dark" not in chart_colors:
+            merged["chart_colors"] = DEFAULTS["chart_colors"]
+
+        return merged
+
+    def get(self, key: str) -> object:
+        return self.get_all().get(key, DEFAULTS.get(key))
+
+    def update(self, partial: dict[str, object]) -> dict[str, object]:
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            for key, value in partial.items():
+                self._conn.execute("DELETE FROM app_settings WHERE key = ?", [key])
+                self._conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?, ?)", [key, json.dumps(value)]
+                )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        return self.get_all()

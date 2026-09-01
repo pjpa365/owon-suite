@@ -1,0 +1,58 @@
+# Full pinned dependency freeze, captured from a known-good backend/.venv via
+# `pip freeze` -- used by build-release.ps1/install.ps1 for reproducible
+# installs, so a distributed release always gets the exact versions this app
+# was actually built and tested against, not whatever `^`-range resolves to
+# on install day. backend/requirements.txt (unpinned, top-level) stays the
+# one to edit for normal dev work; regenerate this file (`pip freeze` inside
+# backend/.venv) after any dependency change there.
+
+annotated-doc==0.0.4
+annotated-types==0.8.0
+anyio==4.14.2
+attrs==26.1.0
+bleak==3.0.2
+cffi==2.1.1
+click==8.4.2
+colorama==0.4.6
+cryptography==50.0.1
+duckdb==1.5.5
+fastapi==0.140.0
+h11==0.16.0
+httpcore2==2.12.0
+httptools==0.8.0
+httpx2==2.12.0
+idna==3.18
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+mcp==2.1.1
+mcp-types==2.1.1
+opentelemetry-api==1.44.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+PyJWT==2.13.0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+pywin32==312
+PyYAML==6.0.3
+qrcode==8.2
+referencing==0.37.0
+rpds-py==2026.6.3
+sqlglot==30.17.0
+sse-starlette==3.4.8
+starlette==1.3.1
+truststore==0.10.4
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+uvicorn==0.51.0
+watchfiles==1.2.0
+websockets==16.1.1
+winrt-runtime==3.2.1
+winrt-Windows.Devices.Bluetooth==3.2.1
+winrt-Windows.Devices.Bluetooth.Advertisement==3.2.1
+winrt-Windows.Devices.Bluetooth.GenericAttributeProfile==3.2.1
+winrt-Windows.Devices.Enumeration==3.2.1
+winrt-Windows.Devices.Radios==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
+winrt-Windows.Storage.Streams==3.2.1

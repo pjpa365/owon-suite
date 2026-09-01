@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+bleak
+duckdb
+qrcode
+cryptography
+mcp>=2,<3
+sqlglot

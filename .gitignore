@@ -1,0 +1,33 @@
+# Python virtual environments / caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Backend runtime data (regenerated on first run / by install.ps1)
+backend/owon_meter.duckdb
+backend/owon_meter.duckdb.wal
+backend/config.env
+backend/certs/
+
+# LAN-mode self-signed TLS certificate + private key -- never commit private
+# key material.
+backend/certs/
+
+# Node / frontend build output
+node_modules/
+frontend/dist/
+frontend/.env.local
+
+# poc/ local capture data (hardware test recordings, not source)
+poc/*.csv
+poc/*.bin
+
+# Release packaging output (build-release.ps1) -- published to GitHub
+# Releases instead of checked in.
+/owon-suite-v*.zip
+/release-staging/
+
+# OS cruft
+.DS_Store
+Thumbs.db

@@ -1,0 +1,102 @@
+# Suite for OWON Devices
+
+A Windows desktop app for OWON BLE digital multimeters — live readings,
+device control, long-term recording, data visualization, calculations, and
+an MCP server for AI-agent access. Runs locally in your browser; no cloud
+account, no data leaving your PC.
+
+Currently targets the **OWON B41T+**. The BLE protocol was independently
+reverse-engineered and validated against real hardware (see
+[`docs/protocol-spec.md`](docs/protocol-spec.md)).
+
+## What it does
+
+- Connects to an OWON B41T+ over Bluetooth Low Energy — live value display,
+  Hold/Range/backlight/Bluetooth-off and other button-equivalent controls.
+- A customizable multi-widget dashboard: live chart, measurement table,
+  scatter/XY chart, recording control, device list — drag/resize/place,
+  multiple independent windows, dark/light mode.
+- Two recording modes: **online** (PC-timed, live-streamed to the app) and
+  **offline** (the meter records standalone, downloaded afterward).
+- Built-in calculations (Ah, Wh, shunt current `I = U / R`) with time-series
+  alignment/interpolation between differently-sampled measurements.
+- CSV export, and chart image export (PNG/JPEG/SVG).
+- A local **MCP server** so an AI assistant (e.g. Claude Desktop) can read
+  live values and stored recordings, and — if you choose to enable it —
+  control the meter and recordings too.
+
+## Limitations
+
+- **Windows only.** The installer and the BLE backend (`bleak`'s WinRT
+  backend) target Windows 10/11.
+- **OWON B41T+ only, today.** The architecture (see
+  [`architecture.md`](architecture.md) §9) leaves room for other
+  brands/instrument types, but nothing else is implemented yet.
+- Needs a working Bluetooth Low Energy adapter on the PC.
+- Early-stage project — expect rough edges, and please open an issue if you
+  hit one.
+
+## Install
+
+1. Download [`install.ps1`](install.ps1) (or clone this repo).
+2. Open PowerShell in the folder you downloaded it to, and run:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\install.ps1
+   ```
+3. Answer a few questions (install folder, port, Start Menu shortcut,
+   optional Windows Service, optional auto-start on boot) — defaults are
+   sensible for most people, just press Enter.
+
+The installer checks for a Bluetooth adapter and for Python (installing it
+via `winget` if missing), downloads the latest release, and leaves the app
+running. It prints the URL to open and how to (re)start it next time.
+
+The installer is unsigned, so Windows SmartScreen may show an "unknown
+publisher" warning the first time — click **More info → Run anyway** to
+proceed.
+
+## Building from source
+
+```powershell
+# Backend
+cd backend
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python run.py          # dev server, http://127.0.0.1:10765
+
+# Frontend (separate terminal)
+cd frontend
+npm install
+npm run dev                          # dev server, http://127.0.0.1:5173
+```
+
+`build-release.ps1` builds the frontend and packages a distributable
+release zip (what `install.ps1` downloads) from a working checkout.
+
+## Screenshots
+
+_Coming soon._
+
+## Acknowledgments
+
+- **OWON** — this project targets OWON's B41T+ hardware. It is an
+  independent, community project, not affiliated with or endorsed by OWON.
+- **[jtcash/OwonB41T](https://github.com/jtcash/OwonB41T)** and
+  **[DeanCording/owonb35](https://github.com/DeanCording/owonb35)** — two
+  independent prior open-source projects whose protocol writeups made this
+  project's BLE reverse-engineering possible without sniffing traffic from
+  scratch.
+- Built on: [FastAPI](https://fastapi.tiangolo.com/),
+  [Uvicorn](https://www.uvicorn.org/), [DuckDB](https://duckdb.org/),
+  [bleak](https://github.com/hbldh/bleak),
+  [Model Context Protocol](https://modelcontextprotocol.io/),
+  [sqlglot](https://github.com/tobymao/sqlglot) (backend); React, Mantine,
+  [Apache ECharts](https://echarts.apache.org/), TanStack Query, Zustand,
+  react-grid-layout, dayjs, date-fns, Tabler Icons (frontend). Thank you to
+  the authors and maintainers of all of these.
+
+## License
+
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, study, and
+modify for any noncommercial purpose. Commercial use requires the
+copyright holder's permission.
