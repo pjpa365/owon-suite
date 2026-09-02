@@ -117,7 +117,25 @@ Windows-only for now, same as `install.ps1` itself.
 
 ## Screenshots
 
-_Coming soon._
+**Dashboard** — customizable widgets: devices, recording control, charts,
+live meter display (light and dark mode)
+
+![Dashboard, light mode](screenshots/dashboard-light.png)
+![Dashboard, dark mode](screenshots/dashboard-dark.png)
+
+**Settings** — appearance, chart formatting, per-unit chart colors, mobile
+access QR code, MCP server toggle
+
+![Settings page](screenshots/settings.png)
+
+**Data admin** — browse, filter, chart, and manage stored measurements
+
+![Data admin page](screenshots/data-admin.png)
+
+**Mobile client** — phone-friendly meter view, reachable via the QR code
+above
+
+![Mobile client](screenshots/mobile.jpg)
 
 ## Acknowledgments
 
