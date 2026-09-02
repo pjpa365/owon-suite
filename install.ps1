@@ -222,10 +222,14 @@ $NeedsAdminForScope = $AllUsersBool -or (Test-RequiresAdmin -Path $InstallDir)
 # ---------------------------------------------------------------------------
 # Existing-install detection
 # ---------------------------------------------------------------------------
+Write-Host "Checking for an existing install at $InstallDir..." -ForegroundColor Cyan
 $ManifestPath = Join-Path $InstallDir "install-manifest.json"
 $ExistingManifest = $null
 if (Test-Path $ManifestPath) {
     $ExistingManifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+}
+if (-not $ExistingManifest -and -not $ExistingAction) {
+    Write-Host "No existing install found -- proceeding with a new install." -ForegroundColor Green
 }
 
 if ($ExistingManifest -and -not $ExistingAction) {
@@ -535,13 +539,21 @@ if ($CreateShortcutBool) {
     }
     $WshShell = New-Object -ComObject WScript.Shell
 
+    # IconLocation's documented format is "path,index" -- a bare path works
+    # for most single-image .ico files too, but the explicit ",0" is the
+    # correct form and avoids relying on that fallback.
+    $HasIcon = Test-Path $IconPath
+    if (-not $HasIcon) {
+        Write-Host "Icon not found at $IconPath -- shortcuts will use a default icon." -ForegroundColor Yellow
+    }
+
     $ShortcutStartPath = Join-Path $StartMenuPrograms "$AppTitle.lnk"
     $StartShortcut = $WshShell.CreateShortcut($ShortcutStartPath)
     $StartShortcut.TargetPath = "powershell.exe"
     $StartShortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StartScriptPath`""
     $StartShortcut.WorkingDirectory = $InstallDir
     $StartShortcut.Description = "Start $AppTitle"
-    if (Test-Path $IconPath) { $StartShortcut.IconLocation = $IconPath }
+    if ($HasIcon) { $StartShortcut.IconLocation = "$IconPath,0" }
     $StartShortcut.Save()
 
     $ShortcutStopPath = Join-Path $StartMenuPrograms "Stop $AppTitle.lnk"
@@ -550,10 +562,13 @@ if ($CreateShortcutBool) {
     $StopShortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StopScriptPath`""
     $StopShortcut.WorkingDirectory = $InstallDir
     $StopShortcut.Description = "Stop $AppTitle"
-    if (Test-Path $IconPath) { $StopShortcut.IconLocation = $IconPath }
+    if ($HasIcon) { $StopShortcut.IconLocation = "$IconPath,0" }
     $StopShortcut.Save()
 
     Write-Host "Shortcuts created: '$AppTitle' and 'Stop $AppTitle'" -ForegroundColor Green
+    if ($HasIcon) {
+        Write-Host "(If they still show a generic icon, that's Windows' icon cache -- sign out/in or restart Explorer to refresh it.)" -ForegroundColor Yellow
+    }
     Write-Host ""
 }
 
