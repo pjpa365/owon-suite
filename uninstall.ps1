@@ -15,6 +15,15 @@
 $ErrorActionPreference = "Stop"
 
 $InstallDir = $PSScriptRoot
+
+# Windows refuses to delete a directory that's any running process's current
+# working directory -- including this one, since the "Upgrade or Uninstall"
+# shortcut launches PowerShell with its working directory set to $InstallDir
+# itself. Move out of it before anything below tries to remove it (all path
+# use elsewhere in this script is already absolute, so this has no other
+# effect).
+Set-Location $env:TEMP
+
 $ManifestPath = Join-Path $InstallDir "install-manifest.json"
 
 if (-not (Test-Path $ManifestPath)) {
