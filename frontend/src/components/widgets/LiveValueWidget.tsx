@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Badge, Button, Checkbox, Group, Select, SimpleGrid, Stack, Text } from "@mantine/core";
 
-import { useSendControl } from "../../api/devices";
+import { useDevices, useSendControl } from "../../api/devices";
 import { useAdhocStatus, usePauseAdhoc, useResumeAdhoc, useStartAdhoc, useStopAdhoc } from "../../api/measurements";
 import { CONTROL_OPTIONS, type KnownDevice } from "../../api/types";
 import { CONTROL_LABELS } from "../../controlLabels";
@@ -110,7 +110,13 @@ const MIN_SCALE = 0.15;
 const MAX_SCALE = 1.35;
 
 export function MeterDisplayWidget({ config }: MeterDisplayWidgetProps) {
-  const { latest } = useLiveStream(config.deviceId);
+  // A deviceId that no longer matches any known device (the device was
+  // deleted, possibly re-added as a new one) must be treated the same as
+  // unset -- otherwise this falls through to "connected" rendering that
+  // will never receive data, permanently stuck on "waiting for data…".
+  const devices = useDevices();
+  const hasValidDevice = !!config.deviceId && !!devices.data?.some((d) => d.id === config.deviceId);
+  const { latest } = useLiveStream(hasValidDevice ? config.deviceId : undefined);
   const sendControl = useSendControl();
   const fitContainerRef = useRef<HTMLDivElement>(null);
   const fitContentRef = useRef<HTMLDivElement>(null);
@@ -148,7 +154,7 @@ export function MeterDisplayWidget({ config }: MeterDisplayWidgetProps) {
     return () => observer.disconnect();
   }, [latest?.display_value, latest?.unit, latest?.function]);
 
-  if (!config.deviceId) {
+  if (!hasValidDevice) {
     return (
       <Text size="sm" c="dimmed">
         Pick a device via this widget's gear settings.
@@ -156,7 +162,7 @@ export function MeterDisplayWidget({ config }: MeterDisplayWidgetProps) {
     );
   }
 
-  const deviceId = config.deviceId;
+  const deviceId = config.deviceId as string;
 
   return (
     <Stack gap={config.hideDeviceButtons ? 4 : "sm"} h="100%">

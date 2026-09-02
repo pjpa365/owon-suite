@@ -161,13 +161,125 @@ function Request-Elevation {
     exit
 }
 
+function Resolve-ExistingInstall {
+    # Given a manifest was found at $InstallDir: shows the Upgrade/Reinstall/
+    # Remove/Cancel menu (skipped if $ExistingAction is already resolved --
+    # e.g. an elevation relaunch already passed it through), handles Cancel
+    # and Remove by exiting directly (before ever reaching the Bluetooth
+    # check or the scope/folder questions, which are irrelevant to either),
+    # and asks the Reinstall-only "keep the database?" follow-up. Returns
+    # normally only for upgrade/reinstall, with $ExistingAction/$KeepDb/
+    # $AllUsers/$AllUsersBool all resolved. Called from two places: early
+    # (self-detected -- running from inside an existing install) and late
+    # (fresh run, checking whatever folder the questions resolved to).
+    param($Manifest)
+    $script:ExistingManifest = $Manifest
+    if (-not $AllUsers) { $script:AllUsers = if ($Manifest.AllUsers) { "yes" } else { "no" } }
+    $script:AllUsersBool = ($AllUsers -eq "yes")
+
+    if (-not $ExistingAction) {
+        Write-Host "An existing install (v$($Manifest.Version)) was found at $InstallDir." -ForegroundColor Yellow
+        $optionNum = 1
+        $offerUpgrade = $Manifest.Version -ne $ReleaseVersion
+        if ($offerUpgrade) {
+            Write-Host "  $optionNum) Upgrade to v$ReleaseVersion (keeps your existing data)"
+            $upgradeOption = $optionNum
+            $optionNum++
+        }
+        Write-Host "  $optionNum) Reinstall v$ReleaseVersion"
+        $reinstallOption = $optionNum
+        $optionNum++
+        Write-Host "  $optionNum) Remove this installation"
+        $removeOption = $optionNum
+        $optionNum++
+        Write-Host "  $optionNum) Cancel (make no changes)"
+        $cancelOption = $optionNum
+
+        $choice = Read-Host "Choice"
+        $script:ExistingAction = if ($offerUpgrade -and $choice -eq "$upgradeOption") { "upgrade" }
+            elseif ($choice -eq "$reinstallOption") { "reinstall" }
+            elseif ($choice -eq "$removeOption") { "remove" }
+            else { "cancel" }
+        Write-Host ""
+    }
+
+    if ($ExistingAction -eq "cancel") {
+        Write-Host "No changes made." -ForegroundColor Cyan
+        exit 0
+    }
+
+    if ($ExistingAction -eq "remove") {
+        $needsAdmin = $AllUsersBool -or $Manifest.ServiceCreated
+        if ($needsAdmin -and -not $IsAdmin) {
+            Request-Elevation -Params @{
+                Version = $Version; AllUsers = $AllUsers
+                InstallDir = $InstallDir; ExistingAction = "remove"
+            }
+        }
+        & (Join-Path $InstallDir "uninstall.ps1")
+        exit 0
+    }
+
+    if ($ExistingAction -eq "reinstall" -and -not $KeepDb) {
+        Write-Host "Reinstalling v$ReleaseVersion over the existing v$($Manifest.Version) install." -ForegroundColor Cyan
+        $answer = Read-Host "Keep the existing database (recorded measurements)? (Y/n)"
+        $script:KeepDb = if ($answer -match '^[nN]') { "no" } else { "yes" }
+        Write-Host ""
+    }
+}
+
 Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host " $AppTitle -- Installer" -ForegroundColor Cyan
 Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Bluetooth pre-flight check
+# Find the release (queried early: needed both to offer/label "Upgrade" in
+# the existing-install menu below, and later to actually download it)
+# ---------------------------------------------------------------------------
+Write-Host "Checking for the release to install..." -ForegroundColor Cyan
+$ApiUrl = if ($Version) {
+    "https://api.github.com/repos/$GitHubOwner/$GitHubRepo/releases/tags/v$Version"
+} else {
+    "https://api.github.com/repos/$GitHubOwner/$GitHubRepo/releases/latest"
+}
+try {
+    $release = Invoke-RestMethod -Uri $ApiUrl -Headers @{ "User-Agent" = "OwonSuite-Installer" }
+} catch {
+    throw "Couldn't reach GitHub to find a release ($ApiUrl): $($_.Exception.Message)"
+}
+$asset = $release.assets | Where-Object { $_.name -like "owon-suite-v*.zip" } | Select-Object -First 1
+if (-not $asset) {
+    throw "Release '$($release.tag_name)' has no owon-suite-v*.zip file attached."
+}
+$ReleaseVersion = $release.tag_name.TrimStart("v")
+Write-Host "Found release v$ReleaseVersion." -ForegroundColor Green
+Write-Host ""
+
+# ---------------------------------------------------------------------------
+# Running from inside an existing install? (e.g. the local "Upgrade or
+# Uninstall" Start Menu shortcut runs this exact file from InstallDir.)
+# If so, go straight to "what do you want to do" -- asking about Bluetooth
+# or install scope/folder first doesn't make sense when we can already tell
+# where this is and (for Remove/Cancel) that neither question is relevant
+# at all.
+# ---------------------------------------------------------------------------
+if (-not $InstallDir -and $PSCommandPath) {
+    $SelfDir = Split-Path $PSCommandPath -Parent
+    if (Test-Path (Join-Path $SelfDir "install-manifest.json")) {
+        $InstallDir = $SelfDir
+    }
+}
+if ($InstallDir) {
+    $SelfManifestPath = Join-Path $InstallDir "install-manifest.json"
+    if (Test-Path $SelfManifestPath) {
+        Resolve-ExistingInstall -Manifest (Get-Content $SelfManifestPath -Raw | ConvertFrom-Json)
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Bluetooth pre-flight check -- only reached now for a genuinely new
+# install, or an upgrade/reinstall that's actually going ahead.
 # ---------------------------------------------------------------------------
 if (-not $SkipBluetoothCheck) {
     Write-Host "Checking for a Bluetooth adapter..." -ForegroundColor Cyan
@@ -196,30 +308,7 @@ if (-not $SkipBluetoothCheck) {
 }
 
 # ---------------------------------------------------------------------------
-# Find the release (queried early: needed both to offer/label "Upgrade" in
-# the existing-install menu below, and later to actually download it)
-# ---------------------------------------------------------------------------
-Write-Host "Checking for the release to install..." -ForegroundColor Cyan
-$ApiUrl = if ($Version) {
-    "https://api.github.com/repos/$GitHubOwner/$GitHubRepo/releases/tags/v$Version"
-} else {
-    "https://api.github.com/repos/$GitHubOwner/$GitHubRepo/releases/latest"
-}
-try {
-    $release = Invoke-RestMethod -Uri $ApiUrl -Headers @{ "User-Agent" = "OwonSuite-Installer" }
-} catch {
-    throw "Couldn't reach GitHub to find a release ($ApiUrl): $($_.Exception.Message)"
-}
-$asset = $release.assets | Where-Object { $_.name -like "owon-suite-v*.zip" } | Select-Object -First 1
-if (-not $asset) {
-    throw "Release '$($release.tag_name)' has no owon-suite-v*.zip file attached."
-}
-$ReleaseVersion = $release.tag_name.TrimStart("v")
-Write-Host "Found release v$ReleaseVersion." -ForegroundColor Green
-Write-Host ""
-
-# ---------------------------------------------------------------------------
-# [1/6] Install scope
+# [1/6] Install scope -- skipped (already known) if resolved above
 # ---------------------------------------------------------------------------
 if (-not $AllUsers) {
     Write-Host "[1/6] Install for just yourself, or for all users on this PC?" -ForegroundColor Cyan
@@ -251,67 +340,20 @@ Write-Host ""
 $NeedsAdminForScope = $AllUsersBool -or (Test-RequiresAdmin -Path $InstallDir)
 
 # ---------------------------------------------------------------------------
-# Existing-install detection
+# Existing-install detection (fresh-run case: nothing was found next to this
+# script itself above, so check whatever folder the questions resolved to --
+# e.g. someone manually pointing at an old install path)
 # ---------------------------------------------------------------------------
-Write-Host "Checking for an existing install at $InstallDir..." -ForegroundColor Cyan
-$ManifestPath = Join-Path $InstallDir "install-manifest.json"
-$ExistingManifest = $null
-if (Test-Path $ManifestPath) {
-    $ExistingManifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
-}
-if (-not $ExistingManifest -and -not $ExistingAction) {
-    Write-Host "No existing install found -- proceeding with a new install." -ForegroundColor Green
-}
-
-if ($ExistingManifest -and -not $ExistingAction) {
-    Write-Host "An existing install (v$($ExistingManifest.Version)) was found at $InstallDir." -ForegroundColor Yellow
-    $optionNum = 1
-    $offerUpgrade = $ExistingManifest.Version -ne $ReleaseVersion
-    if ($offerUpgrade) {
-        Write-Host "  $optionNum) Upgrade to v$ReleaseVersion (keeps your existing data)"
-        $upgradeOption = $optionNum
-        $optionNum++
+if (-not $ExistingManifest) {
+    Write-Host "Checking for an existing install at $InstallDir..." -ForegroundColor Cyan
+    $ManifestPath = Join-Path $InstallDir "install-manifest.json"
+    if (Test-Path $ManifestPath) {
+        Resolve-ExistingInstall -Manifest (Get-Content $ManifestPath -Raw | ConvertFrom-Json)
+    } elseif (-not $ExistingAction) {
+        Write-Host "No existing install found -- proceeding with a new install." -ForegroundColor Green
     }
-    Write-Host "  $optionNum) Reinstall v$ReleaseVersion"
-    $reinstallOption = $optionNum
-    $optionNum++
-    Write-Host "  $optionNum) Remove this installation"
-    $removeOption = $optionNum
-    $optionNum++
-    Write-Host "  $optionNum) Cancel (make no changes)"
-    $cancelOption = $optionNum
-
-    $choice = Read-Host "Choice"
-    $ExistingAction = if ($offerUpgrade -and $choice -eq "$upgradeOption") { "upgrade" }
-        elseif ($choice -eq "$reinstallOption") { "reinstall" }
-        elseif ($choice -eq "$removeOption") { "remove" }
-        else { "cancel" }
 }
 Write-Host ""
-
-if ($ExistingAction -eq "cancel") {
-    Write-Host "No changes made." -ForegroundColor Cyan
-    exit 0
-}
-
-if ($ExistingAction -eq "remove") {
-    $NeedsAdmin = $NeedsAdminForScope -or ($ExistingManifest -and $ExistingManifest.ServiceCreated)
-    if ($NeedsAdmin -and -not $IsAdmin) {
-        Request-Elevation -Params @{
-            Version = $Version; AllUsers = $(if ($AllUsersBool) { "yes" } else { "no" })
-            InstallDir = $InstallDir; ExistingAction = "remove"
-        }
-    }
-    & (Join-Path $InstallDir "uninstall.ps1")
-    exit 0
-}
-
-if ($ExistingAction -eq "reinstall" -and -not $KeepDb) {
-    Write-Host "Reinstalling v$ReleaseVersion over the existing v$($ExistingManifest.Version) install." -ForegroundColor Cyan
-    $answer = Read-Host "Keep the existing database (recorded measurements)? (Y/n)"
-    $KeepDb = if ($answer -match '^[nN]') { "no" } else { "yes" }
-    Write-Host ""
-}
 
 # ---------------------------------------------------------------------------
 # [3/6]-[6/6]: port / shortcut / service / auto-start -- skipped entirely

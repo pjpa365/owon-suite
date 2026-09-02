@@ -3,6 +3,7 @@ import ReactECharts from "echarts-for-react";
 import { ActionIcon, Checkbox, Group, NumberInput, Select, Stack, Text, Tooltip, useComputedColorScheme } from "@mantine/core";
 import { IconDeviceFloppy, IconEraser, IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react";
 
+import { useDevices } from "../../api/devices";
 import type { KnownDevice, MeasurementOut } from "../../api/types";
 import { useSaveBuffer } from "../../api/measurements";
 import { useSettings } from "../../api/settings";
@@ -64,11 +65,17 @@ export function LiveChartSettings({
 
 export function LiveChartWidget({ config }: LiveChartWidgetProps) {
   const settings = useSettings();
+  // A deviceId that no longer matches any known device (the device was
+  // deleted, possibly re-added as a new one) must be treated the same as
+  // unset -- otherwise this falls through to "connected" rendering that
+  // will never receive data, permanently stuck showing an empty chart.
+  const devices = useDevices();
+  const hasValidDevice = !!config.deviceId && !!devices.data?.some((d) => d.id === config.deviceId);
   // Shared per-device buffer (liveChartStream.ts) rather than this widget's
   // own WebSocket -- every Live chart widget watching the same device (any
   // dashboard, active tab or not) sees the exact same data, and it survives
   // this widget unmounting/remounting when its tab isn't active.
-  const { history, sessionStart } = useLiveChartHistory(config.deviceId);
+  const { history, sessionStart } = useLiveChartHistory(hasValidDevice ? config.deviceId : undefined);
   const saveBuffer = useSaveBuffer();
   const chartRef = useRef<ReactECharts>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -128,7 +135,7 @@ export function LiveChartWidget({ config }: LiveChartWidgetProps) {
     };
   }, []);
 
-  if (!config.deviceId) {
+  if (!hasValidDevice) {
     return (
       <Text size="sm" c="dimmed">
         Pick a device via this widget's gear settings.
@@ -136,7 +143,7 @@ export function LiveChartWidget({ config }: LiveChartWidgetProps) {
     );
   }
 
-  const deviceId = config.deviceId;
+  const deviceId = config.deviceId as string;
   const pointCount = config.pointCount ?? DEFAULT_POINT_COUNT;
   const effectiveHistory = paused && frozenHistory ? frozenHistory : history;
   // Fixed-width, non-compressing window (Changes_post_phase5_and_color_design.txt,
