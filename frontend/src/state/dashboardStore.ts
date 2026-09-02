@@ -74,6 +74,29 @@ function makeDashboard(name: string): Dashboard {
   return { id: makeId(), name, layout: [], widgets: [] };
 }
 
+// A brand-new install's first dashboard isn't empty -- it starts with a
+// small, useful default layout (Devices + Meter display side by side, Live
+// chart below) instead of a blank grid nobody's told to fill in themselves.
+// Only ever used the very first time (see initialDashboard below); anyone
+// with an existing persisted dashboard keeps exactly what they already have
+// -- zustand's `persist` middleware only falls back to this when localStorage
+// has nothing stored yet.
+function makeDefaultMainDashboard(): Dashboard {
+  const devices: WidgetInstance = { id: makeId(), type: "device-list", config: {} };
+  const meter: WidgetInstance = { id: makeId(), type: "live-value", config: {} };
+  const chart: WidgetInstance = { id: makeId(), type: "live-chart", config: {} };
+  return {
+    id: makeId(),
+    name: "Main",
+    widgets: [devices, meter, chart],
+    layout: [
+      { i: devices.id, x: 0, y: 0, w: 3, h: 6, minW: WIDGET_SIZES["device-list"].minW, minH: WIDGET_SIZES["device-list"].minH },
+      { i: meter.id, x: 3, y: 0, w: 5, h: 6, minW: WIDGET_SIZES["live-value"].minW, minH: WIDGET_SIZES["live-value"].minH },
+      { i: chart.id, x: 0, y: 6, w: 8, h: 6, minW: WIDGET_SIZES["live-chart"].minW, minH: WIDGET_SIZES["live-chart"].minH },
+    ],
+  };
+}
+
 function nextLayoutItem(existing: Layout, id: string, type: WidgetType): LayoutItem {
   const maxY = existing.reduce((max, item) => Math.max(max, item.y + item.h), 0);
   const size = WIDGET_SIZES[type];
@@ -105,7 +128,7 @@ interface DashboardState {
   updateLayout: (dashboardId: string, layout: Layout) => void;
 }
 
-const initialDashboard = makeDashboard("Main");
+const initialDashboard = makeDefaultMainDashboard();
 
 export const useDashboardStore = create<DashboardState>()(
   persist(

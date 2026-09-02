@@ -28,8 +28,13 @@ function loadBackendConfig(): { HOST: string; PORT: string; BUFFER_SIZE: string 
 
 const backendConfig = loadBackendConfig()
 const backendBaseUrl = `http://${backendConfig.HOST}:${backendConfig.PORT}`
-const appVersion = (JSON.parse(fs.readFileSync(path.resolve(dirname, 'package.json'), 'utf-8')) as { version: string })
-  .version
+// OWON_RELEASE_VERSION (set by build-release.ps1) overrides package.json's
+// version for a public-release build, so the shipped app displays the
+// version it was actually released as -- independent of this repo's own
+// internal package.json version, which tracks unrelated dev progress.
+const appVersion =
+  process.env.OWON_RELEASE_VERSION ??
+  (JSON.parse(fs.readFileSync(path.resolve(dirname, 'package.json'), 'utf-8')) as { version: string }).version
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {

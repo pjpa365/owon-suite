@@ -73,7 +73,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 await task
 
 
-app = FastAPI(title="Suite for OWON Devices backend", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Suite for OWON Devices backend", version="0.3.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

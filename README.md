@@ -48,14 +48,28 @@ reverse-engineered and validated against real hardware (see
 
 ## Install
 
-1. Download [`install.ps1`](install.ps1) (or clone this repo).
+Two ways to run the installer — both end up running the exact same script,
+pick whichever you're more comfortable with.
+
+**Option A — one command, nothing to download first:**
+
+Open PowerShell (Start menu → search "PowerShell") and paste:
+```powershell
+irm https://raw.githubusercontent.com/pjpa365/owon-suite/master/install.ps1 | iex
+```
+
+**Option B — download it first, then run it** (if you'd rather look at the
+script before running it):
+
+1. Download [`install.ps1`](install.ps1)
 2. Open PowerShell in the folder you downloaded it to, and run:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```
-3. Answer a few questions (install folder, port, Start Menu shortcut,
-   optional Windows Service, optional auto-start on boot) — defaults are
-   sensible for most people, just press Enter.
+
+Either way, you'll be asked a few questions (install folder, port, Start
+Menu shortcut, optional Windows Service, optional auto-start on boot) —
+defaults are sensible for most people, just press Enter.
 
 The installer checks for a Bluetooth adapter and for Python (installing it
 via `winget` if missing), downloads the latest release, and leaves the app

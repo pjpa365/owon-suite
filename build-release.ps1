@@ -13,7 +13,18 @@
 
   Usage (from repo root):
     powershell -ExecutionPolicy Bypass -File .\build-release.ps1
+    powershell -ExecutionPolicy Bypass -File .\build-release.ps1 -Version 0.1
+
+  -Version overrides the version number used for the release filename/tag.
+  Deliberately separate from frontend/package.json's version: the public
+  release numbering (e.g. starting at v0.1) doesn't have to match this
+  repo's own internal package.json version (which tracks unrelated dev
+  progress) -- pass -Version explicitly whenever the two should differ.
 #>
+
+param(
+    [string]$Version
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -21,8 +32,10 @@ $RepoRoot    = $PSScriptRoot
 $BackendDir  = Join-Path $RepoRoot "backend"
 $FrontendDir = Join-Path $RepoRoot "frontend"
 
-$pkg = Get-Content (Join-Path $FrontendDir "package.json") -Raw | ConvertFrom-Json
-$Version = $pkg.version
+if (-not $Version) {
+    $pkg = Get-Content (Join-Path $FrontendDir "package.json") -Raw | ConvertFrom-Json
+    $Version = $pkg.version
+}
 if (-not $Version) {
     throw "Couldn't read a version from frontend/package.json"
 }
@@ -36,6 +49,10 @@ Push-Location $FrontendDir
 try {
     npm ci
     if ($LASTEXITCODE -ne 0) { throw "npm ci failed (exit code $LASTEXITCODE)" }
+    # Stamps this release's version into the built app (vite.config.ts prefers
+    # this over package.json's own version) so what's actually displayed
+    # always matches what was actually released -- see that file's comment.
+    $env:OWON_RELEASE_VERSION = $Version
     npm run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit code $LASTEXITCODE)" }
 } finally {
@@ -54,6 +71,13 @@ Copy-Item -Path (Join-Path $BackendDir "app") -Destination (Join-Path $BackendSt
 Get-ChildItem -Path (Join-Path $BackendStage "app") -Recurse -Directory -Filter "__pycache__" |
     Remove-Item -Recurse -Force
 
+# Stamp the release version into the staged main.py's FastAPI `version=`
+# (shown in the /docs Swagger UI) -- edits the staged copy only, never the
+# real repo file, same reasoning as the frontend's OWON_RELEASE_VERSION.
+$StagedMainPy = Join-Path $BackendStage "app\main.py"
+(Get-Content $StagedMainPy -Raw) -replace 'version="[^"]*"', "version=`"$Version`"" |
+    Set-Content -Path $StagedMainPy -Encoding utf8 -NoNewline
+
 # Entry point + pinned deps only -- deliberately NOT requirements.txt
 # (unpinned, dev-only), NOT config.env (installer-generated, never shipped),
 # and NOT the .venv/owon_meter.duckdb*/certs runtime artifacts that live
@@ -67,6 +91,10 @@ if (-not (Test-Path $FrontendDist)) {
     throw "frontend/dist not found after build -- did npm run build produce output?"
 }
 Copy-Item -Path $FrontendDist -Destination (Join-Path $StagingDir "frontend\dist") -Recurse
+
+# uninstall.ps1 -- install.ps1 copies this into the install folder itself, so
+# it needs to travel inside the release package.
+Copy-Item -Path (Join-Path $RepoRoot "uninstall.ps1") -Destination $StagingDir
 
 Write-Host "== Zipping $ReleaseName.zip ==" -ForegroundColor Cyan
 if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
