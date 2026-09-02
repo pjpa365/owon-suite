@@ -30,11 +30,32 @@ function Stop-ProcessTree {
     try { Stop-Process -Id $RootId -Force -ErrorAction Stop; Write-Host "  stopped PID $RootId" } catch {}
 }
 
+function Test-AppRunning {
+    if ($Manifest.ServiceCreated) {
+        $svc = Get-Service -Name $Manifest.ServiceName -ErrorAction SilentlyContinue
+        return [bool]($svc -and $svc.Status -eq 'Running')
+    }
+    $PidFile = Join-Path $InstallDir "owon-pids.json"
+    if (-not (Test-Path $PidFile)) { return $false }
+    $prev = Get-Content $PidFile -Raw | ConvertFrom-Json
+    if (-not $prev.BackendPid) { return $false }
+    return $null -ne (Get-Process -Id $prev.BackendPid -ErrorAction SilentlyContinue)
+}
+
 Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host " Uninstalling Suite for OWON Devices v$($Manifest.Version)" -ForegroundColor Cyan
 Write-Host " Installed at: $InstallDir" -ForegroundColor Cyan
 Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host ""
+
+if (Test-AppRunning) {
+    Write-Host "Suite for OWON Devices is currently running -- it needs to be stopped to continue." -ForegroundColor Yellow
+    $stopAnswer = Read-Host "Stop it now? (Y/n)"
+    if ($stopAnswer -match '^[nN]') {
+        Write-Host "Cancelled -- the app is still running, no changes were made." -ForegroundColor Cyan
+        exit 0
+    }
+}
 
 Write-Host "== Stopping the app ==" -ForegroundColor Cyan
 if ($Manifest.ServiceCreated) {
@@ -68,6 +89,13 @@ Write-Host "== Removing shortcuts ==" -ForegroundColor Cyan
 if ($Manifest.ShortcutFolderPath -and (Test-Path $Manifest.ShortcutFolderPath)) {
     Remove-Item $Manifest.ShortcutFolderPath -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "  removed $($Manifest.ShortcutFolderPath)"
+}
+
+$UninstallRegRoot = if ($Manifest.AllUsers) { "HKLM:" } else { "HKCU:" }
+$UninstallRegKey = Join-Path $UninstallRegRoot "Software\Microsoft\Windows\CurrentVersion\Uninstall\OwonSuite"
+if (Test-Path $UninstallRegKey) {
+    Remove-Item $UninstallRegKey -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "  removed Programs & Features registration"
 }
 
 Write-Host ""

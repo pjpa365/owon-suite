@@ -94,7 +94,13 @@ async def _tick() -> None:
         logger.exception("background BLE scan failed")
         return
 
-    known_addresses = {d.address for d in known}
+    # Re-read known devices *after* the scan (not the tick-start snapshot
+    # above, which is fine for the auto-connect loop below but was racy
+    # here): a device added while this ~10s scan was in flight would
+    # otherwise get clobbered right back into _unregistered by this tick,
+    # even though POST /devices already removed it via
+    # remove_from_unregistered() the moment it was added.
+    known_addresses = {d.address for d in state.device_manager.list()}
     found_addresses = {d.address for d in found}
 
     _unregistered = [

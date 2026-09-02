@@ -87,6 +87,19 @@ function Stop-ProcessTree {
     try { Stop-Process -Id $RootId -Force -ErrorAction Stop } catch {}
 }
 
+function Test-AppRunning {
+    param($Manifest, [string]$Dir)
+    if ($Manifest.ServiceCreated) {
+        $svc = Get-Service -Name $Manifest.ServiceName -ErrorAction SilentlyContinue
+        return [bool]($svc -and $svc.Status -eq 'Running')
+    }
+    $PidFile = Join-Path $Dir "owon-pids.json"
+    if (-not (Test-Path $PidFile)) { return $false }
+    $prev = Get-Content $PidFile -Raw | ConvertFrom-Json
+    if (-not $prev.BackendPid) { return $false }
+    return $null -ne (Get-Process -Id $prev.BackendPid -ErrorAction SilentlyContinue)
+}
+
 function Stop-RunningApp {
     # Stops whatever's currently running for an existing install, whether
     # it's a Windows Service or a plain background process -- used before
@@ -105,22 +118,40 @@ function Stop-RunningApp {
     Start-Sleep -Seconds 1
 }
 
+function Confirm-StopRunningApp {
+    # Checks whether the app is actually running and, if so, asks before
+    # stopping it. Returns $false (caller must abort with no changes made)
+    # only when it's running AND the answer is no; otherwise stops it (if
+    # it was running) and returns $true.
+    param($Manifest, [string]$Dir)
+    if (-not (Test-AppRunning -Manifest $Manifest -Dir $Dir)) { return $true }
+    Write-Host "$AppTitle is currently running -- it needs to be stopped to continue." -ForegroundColor Yellow
+    $answer = Read-Host "Stop it now? (Y/n)"
+    if ($answer -match '^[nN]') { return $false }
+    Stop-RunningApp -Manifest $Manifest -Dir $Dir
+    return $true
+}
+
 $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $IsAdmin = $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+function Get-SelfScriptPath {
+    # $PSCommandPath is empty when this script was run via `irm ... | iex`
+    # (no local file backs it) rather than `-File` -- download a fresh copy
+    # so callers needing an actual file (an elevated relaunch, or the local
+    # copy saved into the install folder) always have one.
+    if ($PSCommandPath) { return $PSCommandPath }
+    $path = Join-Path $env:TEMP "owon-install-$(Get-Random).ps1"
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$GitHubOwner/$GitHubRepo/master/install.ps1" -OutFile $path
+    return $path
+}
 
 function Request-Elevation {
     # Re-invokes this script elevated, passing through every already-
     # resolved answer so the elevated pass doesn't ask anything twice.
     param([hashtable]$Params)
     Write-Host "This step needs administrator rights -- Windows will now show a permission prompt; click Yes to continue." -ForegroundColor Yellow
-    # $PSCommandPath is empty when this script was run via `irm ... | iex`
-    # (no local file backs it) rather than `-File` -- download a copy so the
-    # elevated relaunch has an actual file to point at.
-    $ScriptPathForRelaunch = $PSCommandPath
-    if (-not $ScriptPathForRelaunch) {
-        $ScriptPathForRelaunch = Join-Path $env:TEMP "owon-install-$(Get-Random).ps1"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$GitHubOwner/$GitHubRepo/master/install.ps1" -OutFile $ScriptPathForRelaunch
-    }
+    $ScriptPathForRelaunch = Get-SelfScriptPath
     $argList = @("-ExecutionPolicy", "Bypass", "-File", "`"$ScriptPathForRelaunch`"", "-SkipBluetoothCheck")
     foreach ($key in $Params.Keys) {
         $val = $Params[$key]
@@ -369,8 +400,11 @@ function Write-Step {
 }
 
 if ($ExistingAction -in @("upgrade", "reinstall")) {
+    if (-not (Confirm-StopRunningApp -Manifest $ExistingManifest -Dir $InstallDir)) {
+        Write-Host "Cancelled -- $AppTitle is still running, no changes were made." -ForegroundColor Cyan
+        exit 0
+    }
     Write-Step $Steps[$StepIndex]
-    Stop-RunningApp -Manifest $ExistingManifest -Dir $InstallDir
 }
 
 # ---------------------------------------------------------------------------
@@ -443,6 +477,11 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Path (Join-Path $ExtractDir "backend") -Destination (Join-Path $InstallDir "backend") -Recurse -Force
 Copy-Item -Path (Join-Path $ExtractDir "frontend") -Destination (Join-Path $InstallDir "frontend") -Recurse -Force
 Copy-Item -Path (Join-Path $ExtractDir "uninstall.ps1") -Destination (Join-Path $InstallDir "uninstall.ps1") -Force
+# A local, refreshed-at-every-install/upgrade copy of this script itself --
+# the "Upgrade or uninstall" shortcut runs this instead of a live
+# `irm | iex` fetch, since that download-and-pipe-to-execute pattern is
+# exactly what got it flagged/blocked by Windows Defender.
+Copy-Item -Path (Get-SelfScriptPath) -Destination (Join-Path $InstallDir "install.ps1") -Force
 Remove-Item $TempDir -Recurse -Force
 
 $BackendInstallDir = Join-Path $InstallDir "backend"
@@ -548,7 +587,9 @@ if ($CreateShortcutBool) {
         Write-Host "Icon not found at $IconPath -- shortcuts will use a default icon." -ForegroundColor Yellow
     }
 
-    $StartShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Start app.lnk"))
+    # Each name includes "OWON" so Windows Search can find them individually
+    # -- previously only the containing folder's name did.
+    $StartShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Suite for OWON - Start.lnk"))
     $StartShortcut.TargetPath = "powershell.exe"
     $StartShortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StartScriptPath`""
     $StartShortcut.WorkingDirectory = $InstallDir
@@ -556,7 +597,7 @@ if ($CreateShortcutBool) {
     if ($HasIcon) { $StartShortcut.IconLocation = "$IconPath,0" }
     $StartShortcut.Save()
 
-    $StopShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Stop app.lnk"))
+    $StopShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Suite for OWON - Stop.lnk"))
     $StopShortcut.TargetPath = "powershell.exe"
     $StopShortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StopScriptPath`""
     $StopShortcut.WorkingDirectory = $InstallDir
@@ -566,18 +607,19 @@ if ($CreateShortcutBool) {
 
     # Interactive (a visible window, unlike Start/Stop above) -- re-running
     # the installer already detects this install and offers Upgrade/
-    # Reinstall/Remove, so this needs no new logic, just the shortcut.
-    # Always fetches the current install.ps1 from GitHub rather than a copy
-    # frozen at this moment, so it stays correct even after a future fix.
-    $UpgradeShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Upgrade or uninstall.lnk"))
+    # Reinstall/Remove, so this needs no new logic, just the shortcut. Runs
+    # the local copy saved into the install folder above, NOT a live
+    # `irm | iex` fetch -- that download-and-pipe-to-execute pattern is what
+    # got this shortcut flagged/blocked by Windows Defender.
+    $UpgradeShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Suite for OWON - Upgrade or Uninstall.lnk"))
     $UpgradeShortcut.TargetPath = "powershell.exe"
-    $UpgradeShortcut.Arguments = "-ExecutionPolicy Bypass -NoExit -Command `"irm https://raw.githubusercontent.com/$GitHubOwner/$GitHubRepo/master/install.ps1 | iex`""
+    $UpgradeShortcut.Arguments = "-ExecutionPolicy Bypass -NoExit -File `"$(Join-Path $InstallDir 'install.ps1')`""
     $UpgradeShortcut.WorkingDirectory = $InstallDir
     $UpgradeShortcut.Description = "Upgrade or uninstall $AppTitle"
     if ($HasIcon) { $UpgradeShortcut.IconLocation = "$IconPath,0" }
     $UpgradeShortcut.Save()
 
-    Write-Host "Start Menu folder created: '$AppTitle' (Start app / Stop app / Upgrade or uninstall)" -ForegroundColor Green
+    Write-Host "Start Menu folder created: '$AppTitle' (Start / Stop / Upgrade or Uninstall)" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -639,6 +681,26 @@ if ($AutoStartBool) {
 } | ConvertTo-Json | Set-Content -Path $ManifestPath -Encoding utf8
 
 # ---------------------------------------------------------------------------
+# Register with Windows (Programs & Features / Settings > Apps) so their
+# native "Uninstall" actually runs uninstall.ps1 -- without this, Windows
+# has nothing to wire a bare Start Menu shortcut's right-click "Uninstall"
+# to, and it can look like it did something when it didn't.
+# ---------------------------------------------------------------------------
+$UninstallRegRoot = if ($AllUsersBool) { "HKLM:" } else { "HKCU:" }
+$UninstallRegKey = Join-Path $UninstallRegRoot "Software\Microsoft\Windows\CurrentVersion\Uninstall\OwonSuite"
+New-Item -Path $UninstallRegKey -Force | Out-Null
+Set-ItemProperty -Path $UninstallRegKey -Name "DisplayName" -Value $AppTitle
+Set-ItemProperty -Path $UninstallRegKey -Name "DisplayVersion" -Value $ReleaseVersion
+Set-ItemProperty -Path $UninstallRegKey -Name "Publisher" -Value "pjpa365"
+Set-ItemProperty -Path $UninstallRegKey -Name "InstallLocation" -Value $InstallDir
+Set-ItemProperty -Path $UninstallRegKey -Name "UninstallString" -Value "powershell -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'uninstall.ps1')`""
+Set-ItemProperty -Path $UninstallRegKey -Name "NoModify" -Value 1 -Type DWord
+Set-ItemProperty -Path $UninstallRegKey -Name "NoRepair" -Value 1 -Type DWord
+if (Test-Path $IconPath) { Set-ItemProperty -Path $UninstallRegKey -Name "DisplayIcon" -Value $IconPath }
+$InstallSizeKb = [math]::Round(((Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum) / 1KB)
+if ($InstallSizeKb) { Set-ItemProperty -Path $UninstallRegKey -Name "EstimatedSize" -Value $InstallSizeKb -Type DWord }
+
+# ---------------------------------------------------------------------------
 # Start it now and verify
 # ---------------------------------------------------------------------------
 Write-Step "Starting the app"
@@ -680,10 +742,9 @@ if ($CreateServiceBool) {
     Write-Host "  Stop app              -- stops it"
     Write-Host "  Upgrade or uninstall  -- re-runs this installer against the current install"
 } else {
-    $UpgradeCommand = "irm https://raw.githubusercontent.com/$GitHubOwner/$GitHubRepo/master/install.ps1 | iex"
     Write-Host "No Start Menu shortcuts were created. To (re)start, stop, upgrade, or uninstall later, run:" -ForegroundColor Cyan
     Write-Host "  Start:               powershell -ExecutionPolicy Bypass -File `"$StartScriptPath`""
     Write-Host "  Stop:                powershell -ExecutionPolicy Bypass -File `"$StopScriptPath`""
-    Write-Host "  Upgrade/Uninstall:   powershell -ExecutionPolicy Bypass -Command `"$UpgradeCommand`""
+    Write-Host "  Upgrade/Uninstall:   powershell -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'install.ps1')`""
 }
 Write-Host "===============================================" -ForegroundColor Cyan
