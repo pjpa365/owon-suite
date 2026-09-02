@@ -65,12 +65,9 @@ if ($Manifest.AutoStartCreated) {
 }
 
 Write-Host "== Removing shortcuts ==" -ForegroundColor Cyan
-foreach ($shortcutProp in @("ShortcutStartPath", "ShortcutStopPath")) {
-    $p = $Manifest.$shortcutProp
-    if ($p -and (Test-Path $p)) {
-        Remove-Item $p -Force -ErrorAction SilentlyContinue
-        Write-Host "  removed $p"
-    }
+if ($Manifest.ShortcutFolderPath -and (Test-Path $Manifest.ShortcutFolderPath)) {
+    Remove-Item $Manifest.ShortcutFolderPath -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "  removed $($Manifest.ShortcutFolderPath)"
 }
 
 Write-Host ""

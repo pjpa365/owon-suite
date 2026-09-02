@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Anchor, Group, Modal, Text } from "@mantine/core";
 
+import { useLatestRelease } from "../../api/githubRelease";
+
 export const DISCLAIMER_TEXT =
   'Suite for OWON Devices is an independent software product developed by pjpa365. It is ' +
   "not affiliated with, sponsored by, or endorsed by OWON/Lilliput Group. OWON™ is a " +
@@ -22,10 +24,25 @@ export function AboutModal({ opened, onClose }: { opened: boolean; onClose: () =
 
 export function Footer() {
   const [aboutOpen, setAboutOpen] = useState(false);
+  const latestRelease = useLatestRelease();
 
   return (
     <Group justify="center" gap="xs" py="md" style={{ color: "var(--app-text-faint)" }}>
-      <Text size="xs">v{APP_VERSION}</Text>
+      <Text size="xs">Installed: v{APP_VERSION}</Text>
+      {latestRelease.data && (
+        <>
+          <Text size="xs">&middot;</Text>
+          <Anchor
+            size="xs"
+            c="var(--app-text-faint)"
+            href={latestRelease.data.url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Latest: v{latestRelease.data.version}
+          </Anchor>
+        </>
+      )}
       <Text size="xs">&middot;</Text>
       <Anchor size="xs" c="var(--app-text-faint)" onClick={() => setAboutOpen(true)}>
         About

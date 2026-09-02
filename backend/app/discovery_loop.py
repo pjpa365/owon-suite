@@ -40,6 +40,14 @@ def unregistered_devices() -> list[dict[str, str]]:
     return list(_unregistered)
 
 
+def remove_from_unregistered(address: str) -> None:
+    """Called right after a device is added (api/devices.py's POST /devices)
+    so the "New Device Found" prompt clears on the next poll instead of
+    waiting for the next ~10s scan tick to recompute this list itself."""
+    global _unregistered
+    _unregistered = [d for d in _unregistered if d["address"] != address]
+
+
 def bluetooth_enabled() -> bool | None:
     return _bluetooth_enabled
 

@@ -288,7 +288,7 @@ if ($ExistingAction -eq "reinstall" -and -not $KeepDb) {
 # ---------------------------------------------------------------------------
 if ($ExistingAction -eq "upgrade") {
     $Port = "$($ExistingManifest.Port)"
-    $CreateShortcut = if ($ExistingManifest.ShortcutStartPath) { "yes" } else { "no" }
+    $CreateShortcut = if ($ExistingManifest.ShortcutFolderPath) { "yes" } else { "no" }
     $CreateService  = if ($ExistingManifest.ServiceCreated) { "yes" } else { "no" }
     $AutoStart      = if ($ExistingManifest.AutoStartCreated) { "yes" } else { "no" }
 } else {
@@ -311,12 +311,12 @@ if ($ExistingAction -eq "upgrade") {
         exit 1
     }
 
-    $shortcutDefault = if ($ExistingManifest) { [bool]$ExistingManifest.ShortcutStartPath } else { $true }
+    $shortcutDefault = if ($ExistingManifest) { [bool]$ExistingManifest.ShortcutFolderPath } else { $true }
     $serviceDefault  = if ($ExistingManifest) { [bool]$ExistingManifest.ServiceCreated } else { $false }
     $autoStartDefault = if ($ExistingManifest) { [bool]$ExistingManifest.AutoStartCreated } else { $false }
 
     Write-Host "[4/6] " -NoNewline -ForegroundColor Cyan
-    $CreateShortcutBool = Resolve-YesNo -Value $CreateShortcut -Prompt "Create a Start Menu shortcut?" -DefaultYes $shortcutDefault
+    $CreateShortcutBool = Resolve-YesNo -Value $CreateShortcut -Prompt "Create a '$AppTitle' Start Menu folder with shortcuts (Start, Stop, Upgrade/Uninstall)?" -DefaultYes $shortcutDefault
     Write-Host "[5/6] " -NoNewline -ForegroundColor Cyan
     $CreateServiceBool  = Resolve-YesNo -Value $CreateService  -Prompt "Create a Windows Service (so the app can run without staying logged in)?" -DefaultYes $serviceDefault
     Write-Host "[6/6] " -NoNewline -ForegroundColor Cyan
@@ -453,8 +453,8 @@ Write-Host "(this can take a minute)" -ForegroundColor Cyan
 & $pythonCmd.Source -m venv (Join-Path $BackendInstallDir ".venv")
 if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python virtual environment (exit code $LASTEXITCODE)" }
 $VenvPython = Join-Path $BackendInstallDir ".venv\Scripts\python.exe"
-& $VenvPython -m pip install --upgrade pip --quiet
-& $VenvPython -m pip install -r (Join-Path $BackendInstallDir "requirements-lock.txt") --quiet
+& $VenvPython -m pip install --upgrade pip
+& $VenvPython -m pip install -r (Join-Path $BackendInstallDir "requirements-lock.txt")
 if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit code $LASTEXITCODE)" }
 Write-Host ""
 
@@ -528,8 +528,7 @@ if (Test-Path "$PidFilePath") {
 "@ | Set-Content -Path $StopScriptPath -Encoding utf8
 Write-Host ""
 
-$ShortcutStartPath = ""
-$ShortcutStopPath = ""
+$ShortcutFolderPath = ""
 if ($CreateShortcutBool) {
     Write-Step "Creating Start Menu shortcuts"
     $StartMenuPrograms = if ($UsesProgramData) {
@@ -537,6 +536,8 @@ if ($CreateShortcutBool) {
     } else {
         Join-Path ([System.Environment]::GetFolderPath("StartMenu")) "Programs"
     }
+    $ShortcutFolderPath = Join-Path $StartMenuPrograms $AppTitle
+    New-Item -ItemType Directory -Force -Path $ShortcutFolderPath | Out-Null
     $WshShell = New-Object -ComObject WScript.Shell
 
     # IconLocation's documented format is "path,index" -- a bare path works
@@ -547,8 +548,7 @@ if ($CreateShortcutBool) {
         Write-Host "Icon not found at $IconPath -- shortcuts will use a default icon." -ForegroundColor Yellow
     }
 
-    $ShortcutStartPath = Join-Path $StartMenuPrograms "$AppTitle.lnk"
-    $StartShortcut = $WshShell.CreateShortcut($ShortcutStartPath)
+    $StartShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Start app.lnk"))
     $StartShortcut.TargetPath = "powershell.exe"
     $StartShortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StartScriptPath`""
     $StartShortcut.WorkingDirectory = $InstallDir
@@ -556,8 +556,7 @@ if ($CreateShortcutBool) {
     if ($HasIcon) { $StartShortcut.IconLocation = "$IconPath,0" }
     $StartShortcut.Save()
 
-    $ShortcutStopPath = Join-Path $StartMenuPrograms "Stop $AppTitle.lnk"
-    $StopShortcut = $WshShell.CreateShortcut($ShortcutStopPath)
+    $StopShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Stop app.lnk"))
     $StopShortcut.TargetPath = "powershell.exe"
     $StopShortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StopScriptPath`""
     $StopShortcut.WorkingDirectory = $InstallDir
@@ -565,10 +564,20 @@ if ($CreateShortcutBool) {
     if ($HasIcon) { $StopShortcut.IconLocation = "$IconPath,0" }
     $StopShortcut.Save()
 
-    Write-Host "Shortcuts created: '$AppTitle' and 'Stop $AppTitle'" -ForegroundColor Green
-    if ($HasIcon) {
-        Write-Host "(If they still show a generic icon, that's Windows' icon cache -- sign out/in or restart Explorer to refresh it.)" -ForegroundColor Yellow
-    }
+    # Interactive (a visible window, unlike Start/Stop above) -- re-running
+    # the installer already detects this install and offers Upgrade/
+    # Reinstall/Remove, so this needs no new logic, just the shortcut.
+    # Always fetches the current install.ps1 from GitHub rather than a copy
+    # frozen at this moment, so it stays correct even after a future fix.
+    $UpgradeShortcut = $WshShell.CreateShortcut((Join-Path $ShortcutFolderPath "Upgrade or uninstall.lnk"))
+    $UpgradeShortcut.TargetPath = "powershell.exe"
+    $UpgradeShortcut.Arguments = "-ExecutionPolicy Bypass -NoExit -Command `"irm https://raw.githubusercontent.com/$GitHubOwner/$GitHubRepo/master/install.ps1 | iex`""
+    $UpgradeShortcut.WorkingDirectory = $InstallDir
+    $UpgradeShortcut.Description = "Upgrade or uninstall $AppTitle"
+    if ($HasIcon) { $UpgradeShortcut.IconLocation = "$IconPath,0" }
+    $UpgradeShortcut.Save()
+
+    Write-Host "Start Menu folder created: '$AppTitle' (Start app / Stop app / Upgrade or uninstall)" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -625,8 +634,7 @@ if ($AutoStartBool) {
     ServiceCreated = $CreateServiceBool
     ServiceName = $ServiceName
     AutoStartCreated = $AutoStartBool
-    ShortcutStartPath = $ShortcutStartPath
-    ShortcutStopPath = $ShortcutStopPath
+    ShortcutFolderPath = $ShortcutFolderPath
     InstalledAt = (Get-Date).ToString("o")
 } | ConvertTo-Json | Set-Content -Path $ManifestPath -Encoding utf8
 
@@ -661,22 +669,21 @@ if ($ok) {
 }
 Write-Host ""
 Write-Host "Open it at:  http://127.0.0.1:$Port" -ForegroundColor Green
-if ($CreateShortcutBool) {
-    Write-Host "Start Menu shortcuts: '$AppTitle' and 'Stop $AppTitle'" -ForegroundColor Green
-}
 Write-Host ""
-Write-Host "To (re)start or stop it manually next time:" -ForegroundColor Cyan
 if ($CreateServiceBool) {
-    Write-Host "  It runs as a Windows Service ('$ServiceName') -- manage it via services.msc, or:"
-    Write-Host "    Start-Service $ServiceName"
-    Write-Host "    Stop-Service $ServiceName"
+    Write-Host "It runs as a Windows Service ('$ServiceName') -- manage it via services.msc, or:" -ForegroundColor Cyan
+    Write-Host "  Start-Service $ServiceName"
+    Write-Host "  Stop-Service $ServiceName"
 } elseif ($CreateShortcutBool) {
-    Write-Host "  Click the '$AppTitle' / 'Stop $AppTitle' Start Menu shortcuts."
+    Write-Host "Start Menu folder created: '$AppTitle'" -ForegroundColor Green
+    Write-Host "  Start app             -- (re)starts it"
+    Write-Host "  Stop app              -- stops it"
+    Write-Host "  Upgrade or uninstall  -- re-runs this installer against the current install"
 } else {
-    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$StartScriptPath`""
-    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$StopScriptPath`""
+    $UpgradeCommand = "irm https://raw.githubusercontent.com/$GitHubOwner/$GitHubRepo/master/install.ps1 | iex"
+    Write-Host "No Start Menu shortcuts were created. To (re)start, stop, upgrade, or uninstall later, run:" -ForegroundColor Cyan
+    Write-Host "  Start:               powershell -ExecutionPolicy Bypass -File `"$StartScriptPath`""
+    Write-Host "  Stop:                powershell -ExecutionPolicy Bypass -File `"$StopScriptPath`""
+    Write-Host "  Upgrade/Uninstall:   powershell -ExecutionPolicy Bypass -Command `"$UpgradeCommand`""
 }
-Write-Host ""
-Write-Host "To uninstall or upgrade later: run this installer again, or run"
-Write-Host "  powershell -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'uninstall.ps1')`""
 Write-Host "===============================================" -ForegroundColor Cyan

@@ -60,6 +60,7 @@ async def add_device(body: AddDeviceRequest) -> KnownDeviceOut:
         device = state.device_manager.add(name=body.name, address=body.address, driver=body.driver, color=body.color)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    discovery_loop.remove_from_unregistered(device.address)
     return KnownDeviceOut.from_domain(device)
 
 
