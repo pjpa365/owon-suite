@@ -5,13 +5,48 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import calculations
 from .buffer import BufferedReading
 from .connection_manager import ConnectionStatus
 from .device_manager import KnownDevice
 from .measurement_store import MeasurementPointRecord, MeasurementRecord
+
+# Shared field descriptions for columns whose meaning isn't obvious from the
+# name alone -- surfaced in each model's JSON schema, which is what an
+# MCP-calling agent actually sees (get_measurements/get_measurement_points'
+# structured output schema, not just the `query` tool's prose docstring).
+# `kind` and `function` sound like near-synonyms in plain English and caused
+# a real wrong-query incident from an MCP-calling agent picking the wrong one.
+_KIND_DESC = (
+    "How the recording was captured: 'online' (live PC-side recording), "
+    "'adhoc' (quick recording), 'offline' (device-side recording), "
+    "'buffer_save' (saved from the meter's live buffer), or 'calculated' "
+    "(derived from other measurements, e.g. Ah/Wh/shunt current). NOT the "
+    "measured quantity -- see `function` for that. Exposed as "
+    "`recording_mode` everywhere an MCP tool surfaces this field -- the "
+    "query tool's mcp_measurements view (db.py) and, via "
+    "MCPMeasurementSummaryOut, get_measurements/stop_adhoc_recording/"
+    "stop_online_recording's output -- while staying `kind` in the REST API "
+    "and frontend, which this model is also shared with."
+)
+_FUNCTION_DESC = (
+    "The measured quantity, e.g. 'V DC', 'V AC', 'A DC', 'A AC', 'Ohm', "
+    "'Farad', 'Hz', 'Duty', 'TempC', 'TempF', 'Volts Diode', "
+    "'Ohms Continuity', 'hFE', 'NCV/ADP', or 'Calculated Power'/'Calculated "
+    "Current' for a derived measurement. NOT how the recording was captured "
+    "-- see `kind`."
+)
+_STATUS_DESC = (
+    "The recording's lifecycle state: 'recording' (in progress), 'paused', "
+    "or 'finalized' (complete, values readable)."
+)
+_STATUS_FLAGS_DESC = (
+    "Meter status bits active for this reading: any of 'HOLD', 'REL', "
+    "'AUTO', 'LOW_BATTERY', 'MIN', 'MAX', 'OL' (overload/open-circuit), "
+    "'MAXMIN'. Empty list means none were set."
+)
 
 
 class KnownDeviceOut(BaseModel):
@@ -62,11 +97,11 @@ class ControlRequest(BaseModel):
 
 class MeasurementOut(BaseModel):
     timestamp: datetime
-    function: str
+    function: str = Field(description=_FUNCTION_DESC)
     unit: str
     value: float | None  # None means overload / no valid reading (e.g. open circuit -- "OL")
     display_value: str
-    status_flags: list[str]
+    status_flags: list[str] = Field(description=_STATUS_FLAGS_DESC)
 
     @classmethod
     def from_domain(cls, reading: BufferedReading) -> "MeasurementOut":
@@ -85,11 +120,11 @@ class MeasurementSummaryOut(BaseModel):
     id: str
     device_id: str
     device_name: str
-    kind: str
+    kind: str = Field(description=_KIND_DESC)
     name: str
     unit: str
-    function: str
-    status: str
+    function: str = Field(description=_FUNCTION_DESC)
+    status: str = Field(description=_STATUS_DESC)
     start_time: datetime
     end_time: datetime | None
     min_value: float | None
@@ -127,7 +162,7 @@ class MeasurementPointOut(BaseModel):
     timestamp: datetime
     value: float | None
     display_value: str
-    status_flags: list[str]
+    status_flags: list[str] = Field(description=_STATUS_FLAGS_DESC)
 
     @classmethod
     def from_domain(cls, p: MeasurementPointRecord) -> "MeasurementPointOut":

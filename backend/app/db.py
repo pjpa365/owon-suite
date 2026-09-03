@@ -90,10 +90,18 @@ _MCP_VIEWS = """
 CREATE OR REPLACE VIEW mcp_devices AS
     SELECT id, name, driver FROM known_devices WHERE NOT hidden;
 
+-- `kind` is exposed here as `recording_mode` -- the underlying column/Pydantic
+-- field name is unchanged everywhere else (REST API, frontend, `measurements`
+-- table) on purpose: "kind" reads as "kind of measurement" (temperature/
+-- voltage/...), which is actually what `function` means, and that collision
+-- caused a real wrong-query incident from an MCP-calling agent. Renaming only
+-- the query-tool-facing view column removes the confusing name exactly where
+-- an agent guesses at column meaning from names alone, without touching
+-- anything else that already depends on the real column being called "kind".
 CREATE OR REPLACE VIEW mcp_measurements AS
-    SELECT id, device_id, device_name, kind, name, unit, function, status,
-           start_time, end_time, min_value, max_value, avg_value, median_value,
-           count, created_at
+    SELECT id, device_id, device_name, kind AS recording_mode, name, unit,
+           function, status, start_time, end_time, min_value, max_value,
+           avg_value, median_value, count, created_at
     FROM measurements;
 
 CREATE OR REPLACE VIEW mcp_measurement_points AS

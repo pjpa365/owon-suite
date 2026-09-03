@@ -1,5 +1,6 @@
 import { List, Stack, Text, Title } from "@mantine/core";
 
+import { useSettings } from "../../api/settings";
 import type { WidgetType } from "../../state/dashboardStore";
 
 export interface ManualSection {
@@ -47,7 +48,26 @@ function Section({ id, title, children }: { id: string; title: string; children:
   );
 }
 
+// This PC's own scheme/port, read from the page's own address rather than an
+// API call -- the browser already loaded this page over whatever scheme/port
+// the backend is actually serving (plain HTTP in PC-only mode, HTTPS with a
+// self-signed cert once LAN mode has run at least once), so it's the same
+// answer a dedicated endpoint would give, without needing one.
+function thisPcScheme(): string {
+  return window.location.protocol === "https:" ? "https" : "http";
+}
+
+function thisPcPort(): string {
+  return window.location.port || (thisPcScheme() === "https" ? "443" : "80");
+}
+
 export function ManualContent() {
+  const { data: settings } = useSettings();
+  const scheme = thisPcScheme();
+  const port = thisPcPort();
+  const apiKeyDisplay = settings?.mcp_enabled && settings.mcp_api_key ? settings.mcp_api_key : "<the API key you set in Settings>";
+  const localMcpUrl = `${scheme}://127.0.0.1:${port}/mcp`;
+
   return (
     <Stack gap={0}>
       <Section id="getting-started" title="Getting started">
@@ -544,9 +564,10 @@ export function ManualContent() {
           nothing happens, the same error the dashboard itself would show you in that situation.
         </Text>
         <Text size="sm" mt="xs">
-          To connect an MCP-capable AI assistant, point it at{" "}
+          To connect an MCP-capable AI assistant from{" "}
+          <Text span fw={600}>elsewhere on your network</Text>, point it at{" "}
           <Text span fw={600}>
-            http://&lt;this PC's network address&gt;:10765/mcp
+            {scheme}://&lt;this PC's network address&gt;:{port}/mcp
           </Text>{" "}
           (find that address the same way you would for the mobile client), sending your chosen API key in a{" "}
           <Text span fw={600}>X-MCP-Key</Text> header with every request. The exact place to enter this differs by
@@ -566,14 +587,70 @@ export function ManualContent() {
 {`{
   "mcpServers": {
     "owon-meter": {
-      "url": "http://<this PC's network address>:10765/mcp",
+      "url": "${scheme}://<this PC's network address>:${port}/mcp",
       "headers": {
-        "X-MCP-Key": "<the API key you set in Settings>"
+        "X-MCP-Key": "${apiKeyDisplay}"
       }
     }
   }
 }`}
         </Text>
+        <Text size="sm" mt="xs">
+          To connect from an AI assistant running on{" "}
+          <Text span fw={600}>this same PC</Text> (e.g. Claude Desktop), use{" "}
+          <Text span fw={600}>127.0.0.1</Text> instead -- that's your address here:{" "}
+          <Text span fw={600}>{localMcpUrl}</Text>
+          {settings?.mcp_enabled && settings.mcp_api_key
+            ? " (filled in with your current settings below)."
+            : " (enable the MCP server and set an API key in Settings to have your real values filled in here)."}
+        </Text>
+        <Text size="sm" mt="xs">
+          Claude Desktop specifically can't call this URL directly -- it blocks both a raw remote URL and, since
+          this app's HTTPS certificate is self-signed, an untrusted certificate. It needs the{" "}
+          <Text span fw={600}>mcp-remote</Text> bridge (installed on demand via <Text span fw={600}>npx</Text>)
+          instead, configured like this in Claude Desktop's{" "}
+          <Text span fw={600}>claude_desktop_config.json</Text>:
+        </Text>
+        <Text
+          size="xs"
+          ff="monospace"
+          p="xs"
+          style={{
+            whiteSpace: "pre",
+            overflowX: "auto",
+            background: "var(--mantine-color-default-hover)",
+            borderRadius: 6,
+          }}
+        >
+{`{
+  "mcpServers": {
+    "owon-meter": {
+      "command": "C:\\\\Progra~1\\\\nodejs\\\\npx.cmd",
+      "args": ["mcp-remote", "${localMcpUrl}", "--header", "X-MCP-Key:${apiKeyDisplay}"],
+      "env": {
+        "NODE_TLS_REJECT_UNAUTHORIZED": "0"
+      }
+    }
+  }
+}`}
+        </Text>
+        <Text size="sm" mt="xs">
+          Notes on that config:
+        </Text>
+        <List size="sm" spacing="xs">
+          <List.Item>
+            <Text span fw={600}>command</Text>: try plain <Text span fw={600}>"npx"</Text> first -- on some Windows
+            setups Claude Desktop's own process launcher doesn't resolve it from PATH, in which case the full path
+            shown above (adjust if Node.js is installed somewhere other than the default location) is the fallback
+            that's known to work.
+          </List.Item>
+          <List.Item>
+            <Text span fw={600}>NODE_TLS_REJECT_UNAUTHORIZED: "0"</Text> tells the mcp-remote bridge to accept this
+            app's self-signed certificate. This weakens TLS verification for that one bridge process only (not your
+            whole system) -- acceptable here since it's only ever talking to 127.0.0.1, i.e. itself.
+          </List.Item>
+          <List.Item>The API key above is sent in plain text in this config file -- keep it as private as a password.</List.Item>
+        </List>
         <Text size="sm" mt="xs">
           As general caution rather than a hard rule: avoid running a large or complex query while a recording is
           actively in progress.

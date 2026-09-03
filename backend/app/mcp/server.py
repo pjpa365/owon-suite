@@ -30,17 +30,26 @@ server, by design: whichever one acts first simply goes first, the same as
 two browser tabs racing each other today -- see the Part 2 planning note in
 architecture.md SS5.6 for why that's deliberate, not an oversight.
 
-Every tool below returns an actual Pydantic model instance (or a list of
-them), never a hand-dumped dict -- MCPServer derives each tool's published
-output schema from the return type annotation, and needs a concrete,
-schema-representable type to do that. A bare `dict[str, object]` looks
-reasonable but silently defeats this: `object` has no JSON Schema
+Most tools below return an actual Pydantic model instance (or a list of
+them) rather than a hand-dumped dict -- MCPServer derives each tool's
+published output schema from the return type annotation, and needs a
+concrete, schema-representable type to do that. A bare `dict[str, object]`
+looks reasonable but silently defeats this: `object` has no JSON Schema
 representation, schema generation fails, and MCPServer quietly falls back to
 returning only the plain-text-encoded result with no structured JSON
 alongside it -- correct per protocol, but not what "give me proper JSON"
-wants. Returning real models (or, for `query`'s genuinely column-shape-varies
-rows, `dict[str, Any]`) is what actually produces a `structuredContent` field
-next to the always-present backwards-compatible text block.
+wants.
+
+get_measurements/get_measurement_points are the deliberate exception: they
+build real models internally (MCPMeasurementSummaryOut/MeasurementPointOut)
+but return `list[dict[str, Any]]`, matching `query`'s genuinely
+column-shape-varies rows -- see owon-meter-claude-client-workaround.md and
+_dump_omit_empty below. `dict[str, Any]` still produces a structuredContent
+field, just without the strict per-field required/typed schema a concrete
+model would publish -- these two tools consistently failed client-side in
+Claude Desktop with that strict schema in place (confirmed via mcp-remote
+logs showing a correct, complete response on every failing call), while
+`query` -- whose rows have never had a static schema at all -- never has.
 """
 
 from __future__ import annotations
@@ -52,12 +61,13 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from .. import config, state
 from ..api.recordings import _to_engine_config
 from ..connection_manager import ConnectionStatus
 from ..models import (
+    _KIND_DESC,
     AdhocStatusOut,
     MeasurementOut,
     MeasurementPointOut,
@@ -90,6 +100,23 @@ def _reraise_as_tool_error() -> Iterator[None]:
         raise ToolError(str(exc)) from None
 
 
+def _dump_omit_empty(model: BaseModel, *omit_if_empty: str) -> dict[str, Any]:
+    """Dump `model` to a plain JSON-able dict for get_measurements/
+    get_measurement_points, dropping any of `omit_if_empty` whose value is an
+    empty list rather than emitting `[]` for it. Part of the same Claude
+    Desktop workaround as returning `list[dict[str, Any]]` instead of a
+    concrete model (see the module docstring): `source_measurement_ids`/
+    `status_flags` are near-always empty in practice, and were the one
+    structural difference present on every item of a failing capture that
+    `query`'s (working) rows didn't share -- `query` never selects either
+    column, so its rows never carry the field at all, empty or not."""
+    data = model.model_dump(mode="json")
+    for field in omit_if_empty:
+        if data.get(field) == []:
+            del data[field]
+    return data
+
+
 class DeviceStatusOut(BaseModel):
     """list_devices' combined stored-metadata + live-status shape -- no REST
     equivalent returns exactly this, since the REST API always fetches those
@@ -108,6 +135,42 @@ class RecordingStatusOut(BaseModel):
     adhoc: AdhocStatusOut
     online: OnlineRecordingStatusOut
     offline: OfflineRecordingStatusOut
+
+
+class MCPMeasurementSummaryOut(BaseModel):
+    """MeasurementSummaryOut as returned directly by the three MCP tools that
+    expose it (get_measurements, stop_adhoc_recording, stop_online_recording)
+    -- identical fields, except `kind` is renamed to `recording_mode`,
+    matching the same rename already applied to the `query` tool's
+    mcp_measurements view (db.py) and for the same reason: `kind` reads as
+    "kind of measurement" (which is actually what `function` means) and that
+    collision caused a real wrong-query incident from an MCP-calling agent.
+    Kept as a separate model rather than renaming the field on
+    MeasurementSummaryOut itself, since that model is shared with the REST
+    API/frontend (api/measurements.py, api/recordings.py), which keep `kind`."""
+
+    id: str
+    device_id: str
+    device_name: str
+    recording_mode: str = Field(description=_KIND_DESC)
+    name: str
+    unit: str
+    function: str
+    status: str
+    start_time: datetime
+    end_time: datetime | None
+    min_value: float | None
+    max_value: float | None
+    avg_value: float | None
+    median_value: float | None
+    count: int
+    source_measurement_ids: list[str]
+
+    @classmethod
+    def from_summary(cls, s: MeasurementSummaryOut) -> "MCPMeasurementSummaryOut":
+        data = s.model_dump()
+        data["recording_mode"] = data.pop("kind")
+        return cls(**data)
 
 
 @mcp_server.tool()
@@ -149,7 +212,7 @@ def get_measurements(
     date_to: datetime | None = None,
     order_by: Literal["start_time", "name", "unit", "device_name"] = "start_time",
     order_dir: Literal["asc", "desc"] = "desc",
-) -> list[MeasurementSummaryOut]:
+) -> list[dict[str, Any]]:
     """List stored recordings (not live data) -- the same recordings visible
     on the Data admin page -- optionally filtered and sorted. Use this to
     find a measurement_id for get_measurement_points, or to check whether a
@@ -164,17 +227,36 @@ def get_measurements(
     order_by picks the sort field (default "start_time"; also "name", "unit",
     "device_name"); order_dir is "asc" or "desc" (default "desc" -- newest
     first for start_time, highest/last-alphabetically first otherwise).
+
+    Each returned item has: id, device_id, device_name, recording_mode, name,
+    unit, function, status, start_time, end_time, min_value, max_value,
+    avg_value, median_value, count, and source_measurement_ids -- the last is
+    a list, present only when non-empty; when there's nothing to report the
+    key is omitted entirely rather than sent as an empty list. Field notes:
+    - recording_mode: how the recording was captured -- 'online' (live
+      PC-side recording), 'adhoc' (quick recording), 'offline' (device-side
+      recording), 'buffer_save' (saved from the meter's live buffer), or
+      'calculated' (derived from other measurements, e.g. Ah/Wh/shunt
+      current). NOT the measured quantity -- that's `function`.
+    - function: the measured quantity, e.g. 'V DC', 'V AC', 'A DC', 'A AC',
+      'Ohm', 'Farad', 'Hz', 'Duty', 'TempC', 'TempF', 'Volts Diode', 'Ohms
+      Continuity', 'hFE', 'NCV/ADP', or 'Calculated Power'/'Calculated
+      Current' for a derived measurement. NOT how the recording was
+      captured -- that's `recording_mode`.
+    - status: the recording's lifecycle state -- 'recording' (in progress),
+      'paused', or 'finalized' (complete, values readable).
     """
     records = state.measurement_store.list(
         device_id=device_id, name_contains=name_contains, date_from=date_from, date_to=date_to
     )
     summaries = [MeasurementSummaryOut.from_domain(r) for r in records]
     summaries.sort(key=lambda m: getattr(m, order_by), reverse=order_dir == "desc")
-    return summaries
+    mcp_summaries = [MCPMeasurementSummaryOut.from_summary(s) for s in summaries]
+    return [_dump_omit_empty(m, "source_measurement_ids") for m in mcp_summaries]
 
 
 @mcp_server.tool()
-def get_measurement_points(measurement_id: str, limit: int | None = None) -> list[MeasurementPointOut]:
+def get_measurement_points(measurement_id: str, limit: int | None = None) -> list[dict[str, Any]]:
     """Get the recorded values for one stored measurement, oldest first
     (always time-ordered). Find measurement_id via get_measurements, or from
     what stop_adhoc_recording/stop_online_recording returns, or from
@@ -183,6 +265,13 @@ def get_measurement_points(measurement_id: str, limit: int | None = None) -> lis
     limit (optional): return only the first `limit` points instead of all of
     them -- useful for a long recording where you don't need every point.
     Omitted, this returns everything, the same as the Data admin page shows.
+
+    Each returned item has: id, seq, timestamp, value, display_value, and
+    status_flags -- the last is a list, present only when non-empty; when
+    none were set the key is omitted entirely rather than sent as an empty
+    list. status_flags: meter status bits active for that reading, any of
+    'HOLD', 'REL', 'AUTO', 'LOW_BATTERY', 'MIN', 'MAX', 'OL'
+    (overload/open-circuit), 'MAXMIN'.
     """
     try:
         state.measurement_store.get(measurement_id)
@@ -191,7 +280,8 @@ def get_measurement_points(measurement_id: str, limit: int | None = None) -> lis
     points = state.measurement_store.get_points(measurement_id)
     if limit is not None:
         points = points[:limit]
-    return [MeasurementPointOut.from_domain(p) for p in points]
+    points_out = [MeasurementPointOut.from_domain(p) for p in points]
+    return [_dump_omit_empty(p, "status_flags") for p in points_out]
 
 
 @mcp_server.tool()
@@ -204,13 +294,28 @@ async def query(sql: str) -> list[dict[str, Any]]:
     Only a single SELECT statement is allowed, and only against these three
     views (never the underlying tables):
     - mcp_devices(id, name, driver)
-    - mcp_measurements(id, device_id, device_name, kind, name, unit,
-      function, status, start_time, end_time, min_value, max_value,
+    - mcp_measurements(id, device_id, device_name, recording_mode, name,
+      unit, function, status, start_time, end_time, min_value, max_value,
       avg_value, median_value, count, created_at) -- one row per stored
-      recording.
+      recording. Column notes:
+      - recording_mode: how the recording was captured -- 'online' (live
+        PC-side recording), 'adhoc' (quick recording), 'offline'
+        (device-side recording), 'buffer_save' (saved from the meter's live
+        buffer), or 'calculated' (derived from other measurements, e.g.
+        Ah/Wh/shunt current). NOT the measured quantity -- that's `function`.
+      - function: the measured quantity, e.g. 'V DC', 'V AC', 'A DC',
+        'A AC', 'Ohm', 'Farad', 'Hz', 'Duty', 'TempC', 'TempF',
+        'Volts Diode', 'Ohms Continuity', 'hFE', 'NCV/ADP', or
+        'Calculated Power'/'Calculated Current' for a derived measurement.
+        NOT how the recording was captured -- that's `recording_mode`.
+      - status: the recording's lifecycle state -- 'recording' (in
+        progress), 'paused', or 'finalized' (complete, values readable).
     - mcp_measurement_points(measurement_id, seq, timestamp, value,
       display_value, status_flags) -- the actual recorded values, join to
-      mcp_measurements on measurement_id.
+      mcp_measurements on measurement_id. status_flags: meter status bits
+      active for that reading, any of 'HOLD', 'REL', 'AUTO', 'LOW_BATTERY',
+      'MIN', 'MAX', 'OL' (overload/open-circuit), 'MAXMIN' -- empty means
+      none were set.
 
     Any query that isn't a plain read against exactly these views is
     rejected outright with an error -- never partially run. Only a short
@@ -288,14 +393,14 @@ def resume_adhoc_recording(device_id: str) -> AdhocStatusOut:
 
 
 @mcp_server.tool()
-def stop_adhoc_recording(device_id: str) -> MeasurementSummaryOut:
+def stop_adhoc_recording(device_id: str) -> MCPMeasurementSummaryOut:
     """Stop an in-progress quick recording for a device and finalize it as a
     stored data set, returning a summary of what was recorded (min/max/avg,
     sample count, time range). Fails if none is running."""
     with _reraise_as_tool_error():
         measurement_id = state.connection_manager.stop_adhoc(device_id)
     record = state.measurement_store.get(measurement_id)
-    return MeasurementSummaryOut.from_domain(record)
+    return MCPMeasurementSummaryOut.from_summary(MeasurementSummaryOut.from_domain(record))
 
 
 @mcp_server.tool()
@@ -384,7 +489,7 @@ def resume_online_recording(device_id: str) -> OnlineRecordingStatusOut:
 
 
 @mcp_server.tool()
-def stop_online_recording(device_id: str) -> MeasurementSummaryOut:
+def stop_online_recording(device_id: str) -> MCPMeasurementSummaryOut:
     """Stop an in-progress online recording for a device and finalize it as a
     stored data set, returning a summary of what was recorded. Fails if none
     is running. Use get_measurement_points with the returned id to read the
@@ -392,7 +497,7 @@ def stop_online_recording(device_id: str) -> MeasurementSummaryOut:
     with _reraise_as_tool_error():
         measurement_id = state.connection_manager.stop_online(device_id)
     record = state.measurement_store.get(measurement_id)
-    return MeasurementSummaryOut.from_domain(record)
+    return MCPMeasurementSummaryOut.from_summary(MeasurementSummaryOut.from_domain(record))
 
 
 @mcp_server.tool()

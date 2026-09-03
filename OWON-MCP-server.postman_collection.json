@@ -1,0 +1,440 @@
+{
+  "info": {
+    "_postman_id": "a3f0c9d4-6b2e-4e2a-9d1f-7c8e2b5a1234",
+    "name": "OWON meter - MCP server",
+    "description": "Exercises the OWON meter app's MCP server (architecture.md SS5) directly over its streamable-HTTP transport, one request per JSON-RPC call. Covers Part 1 (read-only: requests 4-6, plus 19-20) and Part 2 (button presses and recording control: requests 7-18).\n\nBefore using this collection:\n1. In the app's Settings page, turn on \"Enable MCP server\" -- this alone is enough for every tool in this collection, Part 1 and Part 2 alike (there is deliberately no separate switch for control/recording actions). If you want to test the `query` tool specifically (request 6), also turn on \"Allow ad-hoc data queries\".\n2. Put the exact same API key used in this collection's `apiKey` variable into Settings' \"API key\" field.\n3. Set the `baseUrl` collection variable: `https://127.0.0.1:10765` if the app is running in LAN mode (serve-lan.ps1, self-signed HTTPS), or `http://127.0.0.1:10765` if running in normal dev mode (restart-dev.ps1, plain HTTP). SSL certificate verification is switched off at the collection level so the self-signed LAN-mode certificate doesn't need to be trusted first.\n4. Run requests 1 and 2 once, in order, to open a session (request 1's script captures the session id automatically). Then run 3-20 in any order (respecting each recording's own start-before-pause/stop ordering). If a session expires or the backend restarts, re-run 1 and 2 again.\n5. Responses come back as Server-Sent-Events text, not plain JSON (that's how this transport's default streaming mode works) -- each request's script parses that automatically and prints the actual result to Postman's Console (View > Show Postman Console) as well as the visible response body.\n\n**Requests 7-18 are real actions on your real meter and real recordings, not a simulation** -- `press_button` actually presses that button, and the recording tools actually start/stop/pause real recordings that get stored like any other, exactly as if you'd clicked the equivalent dashboard button yourself. Only run the ones you actually intend to happen. Requests 19-20 are read-only.\n\nThe API key only actually matters when reaching the server from off this PC -- from Postman running on this same PC (127.0.0.1), the app lets loopback requests through either way. It's included on every request anyway so this collection also works unmodified if you point `baseUrl` at this PC's LAN address instead.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "protocolProfileBehavior": {
+    "strictSSL": false
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://127.0.0.1:10765", "type": "string" },
+    { "key": "apiKey", "value": "<paste your own API key from Settings>", "type": "string" },
+    { "key": "sessionId", "value": "", "type": "string" },
+    { "key": "deviceId", "value": "", "type": "string" }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Every response here is either plain JSON or a Server-Sent-Events text",
+          "// stream carrying exactly one JSON-RPC message -- either way, pull out",
+          "// the actual JSON-RPC payload and print it readably, since the raw SSE",
+          "// text (\"event: message\\ndata: {...}\") is otherwise awkward to read.",
+          "const raw = pm.response.text();",
+          "if (!raw) {",
+          "    console.log('(empty body -- expected for a 202 Accepted notification response)');",
+          "} else {",
+          "    let jsonText = raw;",
+          "    const dataLines = raw.split('\\n').filter((l) => l.startsWith('data:'));",
+          "    if (dataLines.length > 0) {",
+          "        jsonText = dataLines[dataLines.length - 1].replace(/^data:\\s*/, '');",
+          "    }",
+          "    try {",
+          "        const parsed = JSON.parse(jsonText);",
+          "        console.log('MCP response:', JSON.stringify(parsed, null, 2));",
+          "        if (parsed.error) {",
+          "            console.log('MCP returned an error:', parsed.error.message || parsed.error);",
+          "        }",
+          "    } catch (e) {",
+          "        console.log('Could not parse response body as JSON:', e.message);",
+          "    }",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Initialize session",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const sid = pm.response.headers.get('Mcp-Session-Id');",
+              "if (sid) {",
+              "    pm.collectionVariables.set('sessionId', sid);",
+              "    console.log('Captured session id:', sid);",
+              "} else {",
+              "    console.log('No Mcp-Session-Id header on the response -- check that MCP is enabled in Settings and the API key matches.');",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": { \"name\": \"postman\", \"version\": \"1.0.0\" }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Opens an MCP session. Must be run once before anything else -- its script captures the `Mcp-Session-Id` response header into the `sessionId` collection variable automatically, which every later request sends back."
+      }
+    },
+    {
+      "name": "2. Confirm initialization (required handshake step)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"notifications/initialized\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Part of the MCP handshake: tells the server the client has finished initializing. Expect an empty 202 Accepted response -- that's correct, not a failure. Run this once, right after request 1."
+      }
+    },
+    {
+      "name": "3. List available tools",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/list\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Not one of the app's own tools -- this is MCP's built-in \"what tools exist\" call, useful to confirm list_devices/get_latest_values/query are all visible with their descriptions."
+      }
+    },
+    {
+      "name": "4. Tool: list_devices",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"list_devices\",\n    \"arguments\": {}\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Lists every known device with its id, name, driver, and whether it's currently online. Copy a device id from the result into the `deviceId` collection variable to use request 5."
+      }
+    },
+    {
+      "name": "5. Tool: get_latest_values",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 4,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"get_latest_values\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\",\n      \"count\": 5\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Gets the most recent live readings for one device (oldest first). Needs a real device id in the `deviceId` collection variable -- get one from request 4's result first."
+      }
+    },
+    {
+      "name": "6. Tool: query",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 5,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"query\",\n    \"arguments\": {\n      \"sql\": \"SELECT * FROM mcp_devices\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Runs a read-only SQL query against the three MCP views (mcp_devices, mcp_measurements, mcp_measurement_points). Requires \"Allow ad-hoc data queries\" to be turned on in Settings, not just \"Enable MCP server\" -- otherwise this returns an error saying the capability is switched off. Edit the `sql` value in the body to try other queries."
+      }
+    },
+    {
+      "name": "7. Tool: press_button",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 6,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"press_button\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\",\n      \"control\": \"HOLD\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Presses one of the meter's 10 buttons, actually sent to the real device: SELECT, RANGE, AUTO_RANGE, HOLD, LIGHT, REL_BLE, BLUETOOTH_OFF, HZ_DUTY, MIN_MAX, NORMAL. This is a real action on real hardware, not a dry run -- the device must be connected."
+      }
+    },
+    {
+      "name": "8. Tool: start_adhoc_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"start_adhoc_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Starts a real, no-configuration recording for this device -- the same as the dashboard's own (Record) button. Requires the device to already have at least one live reading."
+      }
+    },
+    {
+      "name": "9. Tool: pause_adhoc_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 8,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"pause_adhoc_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Pauses the quick recording started by request 8. Fails if none is running."
+      }
+    },
+    {
+      "name": "10. Tool: resume_adhoc_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 9,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"resume_adhoc_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Resumes the quick recording paused by request 9. Fails if none is paused."
+      }
+    },
+    {
+      "name": "11. Tool: stop_adhoc_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 10,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"stop_adhoc_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Stops the quick recording and finalizes it as a real stored data set -- viewable afterwards in Data admin. Fails if none is running."
+      }
+    },
+    {
+      "name": "12. Tool: start_online_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 11,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"start_online_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\",\n      \"stop_mode\": \"duration\",\n      \"duration_seconds\": 60,\n      \"interval_seconds\": 0,\n      \"average_values\": true,\n      \"stop_on_low_battery\": true\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Starts a real online (PC-side) recording -- this example stops itself after 60 seconds. Edit `stop_mode` (\"threshold\"/\"count\"/\"duration\"/\"end_time\") and its matching field (`stop_threshold`, `sample_count`, `duration_seconds`, or `end_time`) to try other stop conditions; `start_threshold` is optional and delays the actual start until a reading crosses it."
+      }
+    },
+    {
+      "name": "13. Tool: pause_online_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 12,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"pause_online_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Pauses the online recording started by request 12. Fails if none is running."
+      }
+    },
+    {
+      "name": "14. Tool: resume_online_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 13,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"resume_online_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Resumes the online recording paused by request 13. Fails if none is paused."
+      }
+    },
+    {
+      "name": "15. Tool: stop_online_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 14,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"stop_online_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Stops the online recording and finalizes it as a real stored data set. Fails if none is running."
+      }
+    },
+    {
+      "name": "16. Tool: start_offline_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 15,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"start_offline_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\",\n      \"interval_seconds\": 5,\n      \"stop_mode\": \"count\",\n      \"sample_count\": 100,\n      \"set_clock\": true\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Starts a real device-side (offline) recording -- the meter will disconnect itself once this succeeds, same as the dashboard equivalent. Downloading the result afterwards needs a person to physically long-press REL/BLE on the meter; this tool can't do that part."
+      }
+    },
+    {
+      "name": "17. Tool: stop_offline_recording",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 16,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"stop_offline_recording\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Stops the offline recording job for this device (only meaningful before the meter reconnects/downloads). Fails if none exists."
+      }
+    },
+    {
+      "name": "18. Tool: recording_status",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 17,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"recording_status\",\n    \"arguments\": {\n      \"device_id\": \"{{deviceId}}\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "One combined check across quick/online/offline recording state for this device -- useful before starting anything new."
+      }
+    },
+    {
+      "name": "19. Tool: get_measurements",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 18,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"get_measurements\",\n    \"arguments\": {\n      \"order_by\": \"start_time\",\n      \"order_dir\": \"desc\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Read-only (Part 1) -- lists stored recordings, newest first by default. Add device_id, name_contains, date_from/date_to to filter, or change order_by (\"start_time\"/\"name\"/\"unit\"/\"device_name\") and order_dir (\"asc\"/\"desc\") to sort differently. Copy an id from the result into a request body's measurement_id to try request 20."
+      }
+    },
+    {
+      "name": "20. Tool: get_measurement_points",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json, text/event-stream" },
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 19,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"get_measurement_points\",\n    \"arguments\": {\n      \"measurement_id\": \"<paste a measurement id from request 19>\"\n    }\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Read-only (Part 1) -- every recorded value for one measurement, oldest first. Add a \"limit\" argument (e.g. 50) to cap how many are returned; omit it to get all of them."
+      }
+    },
+    {
+      "name": "21. Close session",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          { "key": "X-MCP-Key", "value": "{{apiKey}}" },
+          { "key": "Mcp-Session-Id", "value": "{{sessionId}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+        "description": "Optional cleanup: explicitly ends the session opened by request 1, rather than leaving it to expire on its own. Run request 1 again afterwards before using 3-20 again."
+      }
+    }
+  ]
+}
