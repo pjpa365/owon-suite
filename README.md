@@ -16,15 +16,20 @@ Currently targets the **OWON B41T+**. The BLE protocol was independently
 reverse-engineered and validated against real hardware (see
 [`docs/protocol-spec.md`](docs/protocol-spec.md)).
 
+![Dashboard, light mode](screenshots/dashboard-light.png)
+
 ## What it does
 
-- Connects to an OWON B41T+ over Bluetooth Low Energy — live value display,
-  Hold/Range/backlight/Bluetooth-off and other button-equivalent controls.
-- A customizable multi-widget dashboard: live chart, measurement table,
-  scatter/XY chart, recording control, device list — drag/resize/place,
-  multiple independent windows, dark/light mode.
-- Two recording modes: **online** (PC-timed, live-streamed to the app) and
-  **offline** (the meter records standalone, downloaded afterward).
+- Auto-connects to registered OWON B41T+ devices over Bluetooth — live value
+  display, Hold/Range/backlight/Bluetooth-off and other button-equivalent
+  controls. Signals if new OWON devices are found.
+- A customizable multi-widget dashboard: live chart, meter display,
+  recording control, device list, charts — drag/resize/place, multiple
+  self-configurable dashboards, mobile (browser) app.
+- Three recording modes: **ad-hoc** (the Record button starts an instant
+  recording), **online** (PC-timed, live-streamed to the app), and
+  **offline** (the meter records standalone; data downloads automatically on
+  reconnect).
 - Built-in calculations (Ah, Wh, shunt current `I = U / R`) with time-series
   alignment/interpolation between differently-sampled measurements.
 - CSV export, and chart image export (PNG/JPEG/SVG).
@@ -118,9 +123,8 @@ Windows-only for now, same as `install.ps1` itself.
 ## Screenshots
 
 **Dashboard** — customizable widgets: devices, recording control, charts,
-live meter display (light and dark mode)
+live meter display (dark mode; see light mode above)
 
-![Dashboard, light mode](screenshots/dashboard-light.png)
 ![Dashboard, dark mode](screenshots/dashboard-dark.png)
 
 **Settings** — appearance, chart formatting, per-unit chart colors, mobile
